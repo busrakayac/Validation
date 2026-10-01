@@ -912,6 +912,8 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
 
 
     p_proj_dofs  = _project_scalar(new_p_Pa, p_scale_v)
+    log.info(f'[PRESSURE GAUGE] p_proj[0]={p_proj_dofs[0]:.6e}, physical={p_proj_dofs[0]*p_scale_v:.6e} Pa')
+    log.info(f'[PRESSURE GAUGE] equivalent ps shift={p_proj_dofs[0]*p_scale_v/float(solid.shear_modulus/"Pa"):.6e}')
 
     V_mesh_direct = _project_vector(new_vm_x * dt, new_vm_y * dt, R_scale)
     A_mesh_direct = _project_vector(new_am_x * dt**2, new_am_y * dt**2, R_scale)
