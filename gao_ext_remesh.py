@@ -1878,6 +1878,19 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
             
             d_sum = numpy.sum(numpy.stack(list(d_terms.values())), axis=0)
             d_total = numpy.asarray(function.eval(res.derivative('dtest'), arguments=args), dtype=float).reshape(-1)[free_d]
+            R_old = fluid_state['old_coupling_mismatch']
+
+            cos_angle = numpy.dot(R_old, d_total) / (numpy.linalg.norm(R_old) * numpy.linalg.norm(d_total))
+            rel_difference = numpy.linalg.norm(d_total - R_old) / numpy.linalg.norm(d_total)
+
+            log.info(
+                f'[COUPLING VECTOR CHECK] '
+                f'cos(old_direct-lift, post_d)={cos_angle:.9e}, '
+                f'rel_difference={rel_difference:.6e}')
+            log.info(
+                f'[COUPLING VECTOR CHECK] '
+                f'old mismatch L2={numpy.linalg.norm(R_old):.6e}, '
+                f'post-remesh d L2={numpy.linalg.norm(d_total):.6e}')
             
             log.info(
                 f'[D-RESIDUAL SUM] '
@@ -2205,6 +2218,7 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
                     R_lift = numpy.asarray(function.eval(res_d_fluid_lift.derivative('dtest'), arguments=args), dtype=float).reshape(-1)[free_d]
                     R_direct = numpy.asarray(function.eval(res_d_fluid_direct.derivative('dtest'), arguments=args), dtype=float).reshape(-1)[free_d]
                     diff = R_direct - R_lift
+                    old_coupling_mismatch = diff.copy()
                 
                     log.info(
                         f'[OLD COUPLING CHECK] lift: '
@@ -2263,7 +2277,8 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
                     fluid_state,
                     remesh_count,
                 )
-
+                
+                fluid_state['old_coupling_mismatch'] = old_coupling_mismatch
                 free_d = ~numpy.isfinite(cons['d']).reshape(-1)
 
                 for name, term in fluid_state['solid_residual_terms'].items():
