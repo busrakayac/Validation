@@ -1670,8 +1670,10 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
             # We need the inverse of the dfluid mask to exclude dofs without support on the boundary.
 
             dsolid = ~dfluid # true if dof is (partially) supported by solid domain
-            res += function.replace_arguments(topo['fluid'].integral('(dtest_i ρf DuDt_i + ∇_j(dtest_i) σ_ij) dV' @ ns, degree=4), {'dtest': function.arguments_for(res)['dtest'] * dsolid})
+            res_d_fluid_lift = function.replace_arguments(topo['fluid'].integral('(dtest_i ρf DuDt_i + ∇_j(dtest_i) σ_ij) dV' @ ns, degree=4), {'dtest': function.arguments_for(res)['dtest'] * dsolid})
 
+            res += res_d_fluid_lift
+            res_d_fluid_direct = topo['fluid'].boundary['cylinder'].integral('dtest_i σ_ij n_j dS' @ ns, degree=4)
 
         # Zero initial velocity
         args['u'] = numpy.zeros(function.arguments_for(res)['u'].shape)
@@ -2196,6 +2198,37 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
                 need_remesh = True
 
             if need_remesh:
+                if not has_remeshed:
+
+                    free_d = ~numpy.isfinite(cons['d']).reshape(-1)
+                
+                    R_lift = numpy.asarray(function.eval(res_d_fluid_lift.derivative('dtest'), arguments=args), dtype=float).reshape(-1)[free_d]
+                    R_direct = numpy.asarray(function.eval(res_d_fluid_direct.derivative('dtest'), arguments=args), dtype=float).reshape(-1)[free_d]
+                    diff = R_direct - R_lift
+                
+                    log.info(
+                        f'[OLD COUPLING CHECK] lift: '
+                        f'L2={numpy.linalg.norm(R_lift):.6e}, '
+                        f'max={numpy.max(numpy.abs(R_lift)):.6e}'
+                    )
+                
+                    log.info(
+                        f'[OLD COUPLING CHECK] direct: '
+                        f'L2={numpy.linalg.norm(R_direct):.6e}, '
+                        f'max={numpy.max(numpy.abs(R_direct)):.6e}'
+                    )
+                
+                    log.info(
+                        f'[OLD COUPLING CHECK] direct-lift: '
+                        f'L2={numpy.linalg.norm(diff):.6e}, '
+                        f'max={numpy.max(numpy.abs(diff)):.6e}, '
+                        f'rel={numpy.linalg.norm(diff) / max(numpy.linalg.norm(R_lift), 1e-30):.6e}'
+                    )
+                
+                    log.info(
+                        f'[OLD COUPLING CHECK] direct+lift: '
+                        f'L2={numpy.linalg.norm(R_direct + R_lift):.6e}'
+                    )
                 remesh_count += 1
 
                 # Capture old-mesh state for diagnostics BEFORE remeshing.
