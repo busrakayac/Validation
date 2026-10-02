@@ -534,7 +534,8 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     new_res += Pressure('1Pa') * new_topo['fluid'].integral('∇ref_j(dmtest_i) Pmesh_ij dVref' @ ns_m, degree=4)
 
     # Fluid momentum and incompressibility, gradients w.r.t. moving x_m
-    new_res += new_topo['fluid'].integral('(utest_i ρf DuDt_i + ∇_j(utest_i) σ_ij) dV' @ ns_f, degree=4)
+    res_fmom = new_topo['fluid'].integral('(utest_i ρf DuDt_i + ∇_j(utest_i) σ_ij) dV' @ ns_f, degree=4)
+    new_res += res_fmom
     new_res += new_topo['fluid'].integral('ptest ∇_k(u_k) dV' @ ns_f, degree=4)
 
     # ------------------------------------------------------------------
@@ -596,7 +597,32 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     )
 
     res_d_traction = zipped_traction.integral(_dot2(new_ns.dtest, ns_f.traction) * new_ns.dS)
-    new_res += res_d_traction
+    #new_res += res_d_traction
+
+    Bd4 = function.eval(zipped_traction.bind(new_ns.dtest.derivative('dtest')))
+    Bd = Bd4.reshape(Bd4.shape[0] * Bd4.shape[1], -1)
+    Bu4 = function.eval(zipped_traction.bind(new_ns.utest.derivative('utest')))
+    Bu = Bu4.reshape(Bu4.shape[0] * Bu4.shape[1], -1)
+
+    Bd_norm = numpy.linalg.norm(Bd, axis=0)
+    Bu_norm = numpy.linalg.norm(Bu, axis=0)
+    
+    i_d_gamma = numpy.flatnonzero(Bd_norm > 1e-12 * Bd_norm.max())
+    i_u_gamma = numpy.flatnonzero(Bu_norm > 1e-12 * Bu_norm.max())
+
+    Tdu = numpy.linalg.lstsq(Bu[:, i_u_gamma], Bd[:, i_d_gamma], rcond=None)[0]
+    trace_error = numpy.linalg.norm(Bu[:, i_u_gamma] @ Tdu - Bd[:, i_d_gamma]) / numpy.linalg.norm(Bd[:, i_d_gamma])
+    log.info(f'[FLUID REACTION MAP] trace relerror={trace_error:.6e}')
+
+    Adu = numpy.zeros((Bu.shape[1], Bd.shape[1]))
+    Adu[numpy.ix_(i_u_gamma, i_d_gamma)] = Tdu
+    Adu = function.asarray(Adu)
+
+    dtest_arg = function.Argument('dtest', function.arguments_for(new_ns.dtest)['dtest'].shape)
+    utest_from_dtest = (Adu @ dtest_arg.reshape(-1)).reshape(function.arguments_for(new_ns.utest)['utest'].shape)
+
+    res_d_fluid_reaction = function.replace_arguments(res_fmom, {'utest': utest_from_dtest})
+    new_res += res_d_fluid_reaction
 
     # Interface target 
     d_s_remesh_coeffs = numpy.array(args['d'], copy=True)
@@ -1199,13 +1225,12 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
         am_transfer_error_ms2 = am_transfer_error.copy(),
 
         solid_residual_terms = dict(
-        internal=res_d_internal,
-        inertia=res_d_inertia,
-        cmforce=res_d_cmforce,
-        traction=res_d_traction,
+            internal=res_d_internal,
+            inertia=res_d_inertia,
+            cmforce=res_d_cmforce,
+            fluid_reaction=res_d_fluid_reaction,
         ),
-    )
-
+        direct_traction=res_d_traction,
     return (
         new_ns, new_res, new_cons, new_ucons, new_system,
         new_fluid_bezier,
