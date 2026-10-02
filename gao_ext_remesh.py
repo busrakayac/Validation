@@ -523,10 +523,11 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     # ------------------------------------------------------------------
     # 6. Build the new residual
     # ------------------------------------------------------------------
-    new_res = 0.
+    res_d_internal = topo['solid'].integral('∇ref_j(dtest_i) P_ij dVref' @ new_ns, degree=4)
+    res_d_inertia  = topo['solid'].integral('dtest_i ρs (a_i - g_i) dVref' @ new_ns, degree=4)
+    res_d_cmforce  = topo['solid'].integral('dtest_i cmforce_i dVref' @ new_ns, degree=4)
 
-    # Solid momentum — unchanged, persistent topology/field
-    new_res += topo['solid'].integral('(∇ref_j(dtest_i) P_ij + dtest_i ρs (a_i - g_i) + dtest_i cmforce_i) dVref' @ new_ns, degree=4)
+    new_res = res_d_internal + res_d_inertia + res_d_cmforce
     new_res += topo['solid'].integral('cmtest_i x_i dVref' @ new_ns, degree=4) / domain.cylinder_radius**3
 
     # Mesh extension for d_m (elasticity-type smoothing, epoch reference new_geom)
@@ -594,7 +595,8 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
         f'scalar P2 trace dofs={len(i_dm_gamma_scalar)}'
     )
 
-    new_res += zipped_traction.integral(_dot2(new_ns.dtest, ns_f.traction) * new_ns.dS)
+    res_d_traction = zipped_traction.integral(_dot2(new_ns.dtest, ns_f.traction) * new_ns.dS)
+    new_res += res_d_traction
 
     # Interface target 
     d_s_remesh_coeffs = numpy.array(args['d'], copy=True)
@@ -1195,6 +1197,13 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
         transfer_x0_m         = new_dof_x_m.copy(),
         am_restart_ms2        = am_restart.copy(),
         am_transfer_error_ms2 = am_transfer_error.copy(),
+
+        solid_residual_terms = dict(
+        internal=res_d_internal,
+        inertia=res_d_inertia,
+        cmforce=res_d_cmforce,
+        traction=res_d_traction,
+        ),
     )
 
     return (
@@ -1850,6 +1859,29 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
 
         # Residual of each equation at the predictor, before Newton.
         if has_remeshed and istep == fluid_state['remesh_istep'] + 1:
+
+            free_d = ~numpy.isfinite(cons['d']).reshape(-1)
+
+            d_terms = {}
+            
+            for name, term in fluid_state['solid_residual_terms'].items():
+            
+                values = numpy.asarray(function.eval(term.derivative('dtest'), arguments=args), dtype=float).reshape(-1)[free_d]
+                d_terms[name] = values
+            
+                log.info(
+                    f'[D-RESIDUAL TERM] {name}: '
+                    f'L2={numpy.linalg.norm(values):.6e}, '
+                    f'max={numpy.max(numpy.abs(values)):.6e}')
+            
+            d_sum = numpy.sum(numpy.stack(list(d_terms.values())), axis=0)
+            d_total = numpy.asarray(function.eval(res.derivative('dtest'), arguments=args), dtype=float).reshape(-1)[free_d]
+            
+            log.info(
+                f'[D-RESIDUAL SUM] '
+                f'L2={numpy.linalg.norm(d_sum):.6e}, '
+                f'max={numpy.max(numpy.abs(d_sum)):.6e}, '
+                f'sum-error={numpy.linalg.norm(d_sum-d_total):.6e}')
             for trial_name, test_name in (
                 ('d', 'dtest'),       # solid momentum
                 ('cm', 'cmtest'),     # solid centre
@@ -1858,13 +1890,7 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
                 ('p', 'ptest'),       # fluid incompressibility
                 ('lam', 'lamtest'),   # interface displacement
             ):
-                values = numpy.asarray(
-                    function.eval(
-                        res.derivative(test_name),
-                        arguments=args,
-                    ),
-                    dtype=float,
-                ).reshape(-1)
+                values = numpy.asarray(function.eval(res.derivative(test_name), arguments=args), dtype=float).reshape(-1)
 
                 # Dirichlet equations are not solved by Newton.
                 if trial_name in cons:
@@ -1874,8 +1900,7 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
                 log.info(
                     f'[PRE-NEWTON RESIDUAL] {trial_name}: '
                     f'L2={numpy.linalg.norm(values):.6e}, '
-                    f'max={numpy.max(numpy.abs(values)):.6e}'
-                )
+                    f'max={numpy.max(numpy.abs(values)):.6e}')
         try:
             args = system.solve(constrain=cons, arguments=args, tol=1e-9)
 
@@ -2205,6 +2230,18 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
                     fluid_state,
                     remesh_count,
                 )
+
+                free_d = ~numpy.isfinite(cons['d']).reshape(-1)
+
+                for name, term in fluid_state['solid_residual_terms'].items():
+                
+                    values = numpy.asarray(function.eval(term.derivative('dtest'), arguments=args), dtype=float).reshape(-1)[free_d]
+            
+                    log.info(
+                        f'[D-RESIDUAL AT REMESH] {name}: '
+                        f'L2={numpy.linalg.norm(values):.6e}, '
+                        f'max={numpy.max(numpy.abs(values)):.6e}'
+                    )
 
                 fluid_state['remesh_istep'] = istep
                 fluid_state['dam_previous'] = None
