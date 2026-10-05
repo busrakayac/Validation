@@ -599,9 +599,14 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     res_d_traction = zipped_traction.integral(_dot2(new_ns.dtest, ns_f.traction) * new_ns.dS)
     #new_res += res_d_traction
 
-    Bd4 = function.eval(zipped_traction.bind(new_ns.dtest.derivative('dtest')))
+    test_unit = Pressure('1Pa') * Length('1m')
+    dtest_dimless = new_ns.dtest * test_unit
+    utest_dimless = new_ns.utest * test_unit
+    
+    Bd4 = function.eval(zipped_traction.bind(dtest_dimless.derivative('dtest')))
     Bd = Bd4.reshape(Bd4.shape[0] * Bd4.shape[1], -1)
-    Bu4 = function.eval(zipped_traction.bind(new_ns.utest.derivative('utest')))
+    
+    Bu4 = function.eval(zipped_traction.bind(utest_dimless.derivative('utest')))
     Bu = Bu4.reshape(Bu4.shape[0] * Bu4.shape[1], -1)
 
     Bd_norm = numpy.linalg.norm(Bd, axis=0)
@@ -618,8 +623,8 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     Adu[numpy.ix_(i_u_gamma, i_d_gamma)] = Tdu
     Adu = function.asarray(Adu)
 
-    dtest_arg = function.Argument('dtest', function.arguments_for(new_ns.dtest)['dtest'].shape)
-    utest_from_dtest = (Adu @ dtest_arg.reshape(-1)).reshape(function.arguments_for(new_ns.utest)['utest'].shape)
+    dtest_arg = function.Argument('dtest', function.arguments_for(dtest_dimless)['dtest'].shape)
+    utest_from_dtest = (Adu @ dtest_arg.reshape(-1)).reshape(function.arguments_for(utest_dimless)['utest'].shape)
 
     res_d_fluid_reaction = function.replace_arguments(res_fmom, {'utest': utest_from_dtest})
     new_res += res_d_fluid_reaction
