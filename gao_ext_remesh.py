@@ -624,7 +624,7 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     Adu = function.asarray(Adu)
 
     dtest_arg = function.Argument('dtest', function.arguments_for(dtest_dimless)['dtest'].shape)
-    utest_from_dtest = (Adu @ dtest_arg.reshape(-1)).reshape(function.arguments_for(utest_dimless)['utest'].shape)
+    utest_from_dtest = numpy.reshape(Adu @ numpy.ravel(dtest_arg), function.arguments_for(utest_dimless)['utest'].shape)
 
     res_d_fluid_reaction = function.replace_arguments(res_fmom, {'utest': utest_from_dtest})
     new_res += res_d_fluid_reaction
