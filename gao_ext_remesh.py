@@ -1231,6 +1231,7 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
             fluid_reaction=res_d_fluid_reaction,
         ),
         direct_traction=res_d_traction,
+    )
     return (
         new_ns, new_res, new_cons, new_ucons, new_system,
         new_fluid_bezier,
