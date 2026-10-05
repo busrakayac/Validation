@@ -619,12 +619,11 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     trace_error = numpy.linalg.norm(Bu[:, i_u_gamma] @ Tdu - Bd[:, i_d_gamma]) / numpy.linalg.norm(Bd[:, i_d_gamma])
     log.info(f'[FLUID REACTION MAP] trace relerror={trace_error:.6e}')
 
-    Adu = numpy.zeros((Bu.shape[1], Bd.shape[1]))
-    Adu[numpy.ix_(i_u_gamma, i_d_gamma)] = Tdu
-    Adu = function.asarray(Adu)
-
     dtest_arg = function.Argument('dtest', function.arguments_for(dtest_dimless)['dtest'].shape)
-    utest_from_dtest = numpy.reshape(Adu @ numpy.ravel(dtest_arg), function.arguments_for(utest_dimless)['utest'].shape)
+    dtest_gamma = numpy.take(numpy.ravel(dtest_arg),i_d_gamma)
+    utest_gamma = function.asarray(Tdu) @ dtest_gamma
+    utest_flat = function.scatter(utest_gamma, Bu.shape[1], function.asarray(i_u_gamma))
+    utest_from_dtest = numpy.reshape(utest_flat, function.arguments_for(utest_dimless)['utest'].shape)
 
     res_d_fluid_reaction = function.replace_arguments(res_fmom, {'utest': utest_from_dtest})
     new_res += res_d_fluid_reaction
