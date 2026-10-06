@@ -616,6 +616,20 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     i_u_gamma = numpy.flatnonzero(Bu_norm > 1e-12 * Bu_norm.max())
 
     Tdu = numpy.linalg.lstsq(Bu[:, i_u_gamma], Bd[:, i_d_gamma], rcond=None)[0]
+    rows = numpy.argmax(numpy.abs(Tdu), axis=0)
+
+    Tdu_local = numpy.zeros_like(Tdu)
+    Tdu_local[rows, numpy.arange(Tdu.shape[1])] = \
+        Tdu[rows, numpy.arange(Tdu.shape[1])]
+    
+    trace_error_local = numpy.linalg.norm(Bu[:, i_u_gamma] @ Tdu_local - Bd[:, i_d_gamma]) / numpy.linalg.norm(Bd[:, i_d_gamma])
+    
+    log.info(
+        f'[FLUID REACTION MAP LOCAL] '
+        f'error={trace_error_local:.6e}, '
+        f'unique={len(numpy.unique(rows))}/{len(rows)}'
+    )
+    
     trace_error = numpy.linalg.norm(Bu[:, i_u_gamma] @ Tdu - Bd[:, i_d_gamma]) / numpy.linalg.norm(Bd[:, i_d_gamma])
     log.info(f'[FLUID REACTION MAP] trace relerror={trace_error:.6e}')
 
@@ -706,6 +720,12 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
 
     new_cons = System(sqr_u, trial='u').solve_constraints(droptol=1e-9, constrain=new_cons)
     new_ucons = new_cons['u'].copy()
+    u_fixed = numpy.isfinite(new_ucons).ravel()
+
+    log.info(
+        f'[FLUID REACTION MAP] constrained interface u DOFs='
+        f'{numpy.count_nonzero(u_fixed[i_u_gamma])}/{len(i_u_gamma)}'
+    )
     pcons = numpy.full(function.arguments_for(new_ns.p)['p'].shape, numpy.nan)
     pcons[0] = 0.0
     new_cons['p'] = pcons
