@@ -1277,6 +1277,40 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
         f'max|du|={du_proj.max():.6e} m/s'
     )
 
+    # Diagnostic only: can (u,p) restore momentum + incompressibility?
+    up_corr_solution = System(
+        res_fluid_mom + res_fluid_inc,
+        trial=['u', 'p'],
+        test=['utest', 'ptest']).solve(
+        constrain={
+            'u': new_ucons,
+            'p': new_cons['p'],
+        },
+        arguments=projected_args,
+        tol=1e-12)
+    
+    up_corrected_args = dict(projected_args)
+    up_corrected_args['u'] = up_corr_solution['u']
+    up_corrected_args['p'] = up_corr_solution['p']
+    
+    ru_up = numpy.asarray(function.eval(ru_expr, arguments=up_corrected_args)).reshape(-1)[free_u]
+    
+    rp_up = numpy.asarray(function.eval(rp_expr, arguments=up_corrected_args)).reshape(-1)[free_p]
+    
+    du_up_g = function.eval(
+        new_dof_sample.bind(new_ns.urel),
+        arguments={'u': up_corr_solution['u'] - urel_proj_dofs})
+    du_up = numpy.linalg.norm(numpy.asarray(du_up_g / 'm/s'), axis=-1)
+    dp_up_g = function.eval(new_dof_sample.bind(new_ns.p), arguments={'p': up_corr_solution['p'] - projected_args['p']})
+    dp_up = numpy.abs(numpy.asarray(dp_up_g / 'Pa'))
+    
+    log.info(
+        f'[COUPLED-UP CORRECTION] '
+        f'Ru={numpy.linalg.norm(ru_up):.6e}, '
+        f'Rp={numpy.linalg.norm(rp_up):.6e}, '
+        f'max|du|={du_up.max():.6e} m/s, '
+        f'max|dp|={dp_up.max():.6e} Pa')
+
     new_args['u'] = urel_proj_dofs
     new_args['u0'] = u0_proj
 
