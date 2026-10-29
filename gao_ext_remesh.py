@@ -1310,6 +1310,46 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
         f'Rp={numpy.linalg.norm(rp_up):.6e}, '
         f'max|du|={du_up.max():.6e} m/s, '
         f'max|dp|={dp_up.max():.6e} Pa')
+
+    # Coupled (u,p) correction while preserving the transferred
+    # Newmark relative acceleration
+    du_up_dofs = up_corr_solution['u'] - urel_proj_dofs
+    
+    u0_up_consistent = u0_proj + du_up_dofs
+    
+    up_hist_args = dict(projected_args)
+    up_hist_args['u']  = up_corr_solution['u']
+    up_hist_args['p']  = up_corr_solution['p']
+    up_hist_args['u0'] = u0_up_consistent
+
+    ru_up_hist = numpy.asarray(function.eval(ru_expr, arguments=up_hist_args)).reshape(-1)[free_u]
+    rp_up_hist = numpy.asarray(function.eval(rp_expr, arguments=up_hist_args)).reshape(-1)[free_p]
+    arel_up_hist_g = function.eval(new_dof_sample.bind(new_ns.arel), arguments=up_hist_args)
+    
+    darel_up_hist = numpy.linalg.norm(numpy.asarray((arel_up_hist_g - arel_proj_g) / 'm/s2'), axis=-1)
+    
+    log.info(
+        f'[COUPLED-UP CONSISTENT-HISTORY] '
+        f'Ru={numpy.linalg.norm(ru_up_hist):.6e}, '
+        f'Rp={numpy.linalg.norm(rp_up_hist):.6e}, '
+        f'max|darel|={darel_up_hist.max():.6e} m/s2, '
+        f'RMS|darel|={numpy.sqrt(numpy.mean(darel_up_hist**2)):.6e} m/s2'
+    )
+
+    Rd_up_hist = sum(numpy.asarray(function.eval(term.derivative('dtest'), arguments=up_hist_args), dtype=float).reshape(-1)
+        for term in (
+            res_d_internal,
+            res_d_inertia,
+            res_d_cmforce,
+            res_d_fluid_reaction))[free_d]
+    
+    Rf_up_hist = numpy.asarray(function.eval(res_d_fluid_reaction.derivative('dtest'), arguments=up_hist_args), dtype=float).reshape(-1)[free_d]
+    
+    log.info(
+        f'[COUPLED-UP CONSISTENT-HISTORY SOLID] '
+        f'||Rd||={numpy.linalg.norm(Rd_up_hist):.6e}, '
+        f'||dRfluid||={numpy.linalg.norm(Rf_up_hist-Rf_proj):.6e}')
+
     # Exact change in relative acceleration caused by the coupled (u,p) correction
     arel_proj_g = function.eval(new_dof_sample.bind(new_ns.arel), arguments=projected_args)
     arel_up_g = function.eval(new_dof_sample.bind(new_ns.arel), arguments=up_corrected_args)
@@ -1348,8 +1388,8 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
         f'||dRfluid||={numpy.linalg.norm(Rf_up-Rf_proj):.6e}'
     )
 
-    new_args['u'] = up_corr_solution['u']
-    new_args['p'] = up_corr_solution['p']
+    new_args['u']  = urel_proj_dofs
+    new_args['p']  = p_proj_dofs
     new_args['u0'] = u0_proj
 
     tproj_pres, tproj_visc, tproj_tot = function.eval(
