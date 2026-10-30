@@ -1388,9 +1388,9 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
         f'||Rd||={numpy.linalg.norm(Rd_up_hist):.6e}, '
         f'||dRfluid||={numpy.linalg.norm(Rf_up_hist-Rf_proj):.6e}')
 
-    new_args['u']  = urel_proj_dofs
-    new_args['p']  = p_proj_dofs
-    new_args['u0'] = u0_proj
+    new_args['u']  = up_corr_solution['u']
+    new_args['p']  = up_corr_solution['p']
+    new_args['u0'] = u0_up_consistent
 
     tproj_pres, tproj_visc, tproj_tot = function.eval(
         [
