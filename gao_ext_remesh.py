@@ -1337,20 +1337,7 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
         f'RMS|darel|={numpy.sqrt(numpy.mean(darel_up_hist**2)):.6e} m/s2'
     )
 
-    Rd_up_hist = sum(numpy.asarray(function.eval(term.derivative('dtest'), arguments=up_hist_args), dtype=float).reshape(-1)
-        for term in (
-            res_d_internal,
-            res_d_inertia,
-            res_d_cmforce,
-            res_d_fluid_reaction))[free_d]
     
-    Rf_up_hist = numpy.asarray(function.eval(res_d_fluid_reaction.derivative('dtest'), arguments=up_hist_args), dtype=float).reshape(-1)[free_d]
-    
-    log.info(
-        f'[COUPLED-UP CONSISTENT-HISTORY SOLID] '
-        f'||Rd||={numpy.linalg.norm(Rd_up_hist):.6e}, '
-        f'||dRfluid||={numpy.linalg.norm(Rf_up_hist-Rf_proj):.6e}')
-
     # Exact change in relative acceleration caused by the coupled (u,p) correction
     arel_up_g = function.eval(new_dof_sample.bind(new_ns.arel), arguments=up_corrected_args)
     darel_up = numpy.linalg.norm(numpy.asarray((arel_up_g - arel_proj_g) / 'm/s2'), axis=-1)
@@ -1387,6 +1374,19 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
         f'corrected={numpy.linalg.norm(Rd_up):.6e}, '
         f'||dRfluid||={numpy.linalg.norm(Rf_up-Rf_proj):.6e}'
     )
+    Rd_up_hist = sum(numpy.asarray(function.eval(term.derivative('dtest'), arguments=up_hist_args), dtype=float).reshape(-1)
+        for term in (
+            res_d_internal,
+            res_d_inertia,
+            res_d_cmforce,
+            res_d_fluid_reaction))[free_d]
+    
+    Rf_up_hist = numpy.asarray(function.eval(res_d_fluid_reaction.derivative('dtest'), arguments=up_hist_args), dtype=float).reshape(-1)[free_d]
+    
+    log.info(
+        f'[COUPLED-UP CONSISTENT-HISTORY SOLID] '
+        f'||Rd||={numpy.linalg.norm(Rd_up_hist):.6e}, '
+        f'||dRfluid||={numpy.linalg.norm(Rf_up_hist-Rf_proj):.6e}')
 
     new_args['u']  = urel_proj_dofs
     new_args['p']  = p_proj_dofs
