@@ -629,9 +629,6 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
         f'scalar P2 trace dofs={len(i_dm_gamma_scalar)}'
     )
 
-    res_d_traction = zipped_traction.integral(_dot2(new_ns.dtest, ns_f.traction) * new_ns.dS)
-    #new_res += res_d_traction
-
     test_unit = Pressure('1Pa') * Length('1m')
     dtest_dimless = new_ns.dtest * test_unit
     utest_dimless = new_ns.utest * test_unit
@@ -649,19 +646,6 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     i_u_gamma = numpy.flatnonzero(Bu_norm > 1e-12 * Bu_norm.max())
 
     Tdu = numpy.linalg.lstsq(Bu[:, i_u_gamma], Bd[:, i_d_gamma], rcond=None)[0]
-    rows = numpy.argmax(numpy.abs(Tdu), axis=0)
-
-    Tdu_local = numpy.zeros_like(Tdu)
-    Tdu_local[rows, numpy.arange(Tdu.shape[1])] = \
-        Tdu[rows, numpy.arange(Tdu.shape[1])]
-    
-    trace_error_local = numpy.linalg.norm(Bu[:, i_u_gamma] @ Tdu_local - Bd[:, i_d_gamma]) / numpy.linalg.norm(Bd[:, i_d_gamma])
-    
-    log.info(
-        f'[FLUID REACTION MAP LOCAL] '
-        f'error={trace_error_local:.6e}, '
-        f'unique={len(numpy.unique(rows))}/{len(rows)}'
-    )
     
     trace_error = numpy.linalg.norm(Bu[:, i_u_gamma] @ Tdu - Bd[:, i_d_gamma]) / numpy.linalg.norm(Bd[:, i_d_gamma])
     log.info(f'[FLUID REACTION MAP] trace relerror={trace_error:.6e}')
@@ -683,16 +667,6 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
 
     lam_basis = dm_basis[i_dm_gamma_scalar]
     new_ns.lam = (function.field('lam', lam_basis, shape=(2,)) * solid.shear_modulus)
-    Bl4 = function.eval(zipped_traction.bind((new_ns.lam / solid.shear_modulus).derivative('lam')))
-    Bl = Bl4.reshape(Bl4.shape[0] * Bl4.shape[1], -1)
-    Ctrace = Bl.T @ Bf[:, i_dm_gamma]
-
-    log.info(
-        f'[INTERFACE TRACE BASIS] '
-        f'lambda dofs={Bl.shape[1]}, '
-        f'rank={numpy.linalg.matrix_rank(Ctrace)}/{len(i_dm_gamma)}')
-    
-
     new_ns.lamtest = function.replace_arguments(new_ns.lam, 'lam:lamtest') / (solid.shear_modulus * domain.cylinder_radius**2)
 
     # Reaction term: +∫ λ·δd_m  ONLY.
@@ -753,12 +727,6 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
 
     new_cons = System(sqr_u, trial='u').solve_constraints(droptol=1e-9, constrain=new_cons)
     new_ucons = new_cons['u'].copy()
-    u_fixed = numpy.isfinite(new_ucons).ravel()
-
-    log.info(
-        f'[FLUID REACTION MAP] constrained interface u DOFs='
-        f'{numpy.count_nonzero(u_fixed[i_u_gamma])}/{len(i_u_gamma)}'
-    )
     pcons = numpy.full(function.arguments_for(new_ns.p)['p'].shape, numpy.nan)
     pcons[0] = 0.0
     new_cons['p'] = pcons
@@ -772,7 +740,6 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
         trial=['dm', 'lam'],
         test=['dmtest', 'lamtest'],
     )
-
     # ------------------------------------------------------------------
     # 9. Transfer solution to new mesh (physical coordinates, physical velocity, full Newmark history for both d_m and u_rel)
     # ------------------------------------------------------------------
@@ -1067,16 +1034,6 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
 
     vm_new_dofs_ms = vm_new_dofs * R_scale / dt
 
-    log.info(
-        f'[CURRENT STATE] V error = '
-        f'{numpy.linalg.norm(vm_new_dofs - V_mesh):.6e}'
-    )
-
-    log.info(
-        f'[CURRENT STATE] A error = '
-        f'{numpy.linalg.norm(am_new_dofs - A_mesh):.6e}'
-    )
-
     def _project_scalar(target, scale):
         ns_p = Namespace()
         ns_p.fproj = new_topo['fluid'].field('fproj', btype='std', degree=1)
@@ -1088,84 +1045,6 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     p_proj_dofs  = _project_scalar(new_p_Pa, p_scale_v)
     p_proj_dofs -= p_proj_dofs[0]
     log.info(f'[PRESSURE GAUGE] p_proj[0]={p_proj_dofs[0]:.6e}, physical={p_proj_dofs[0]*p_scale_v:.6e} Pa')
-
-    V_mesh_direct = _project_vector(new_vm_x * dt, new_vm_y * dt, R_scale)
-    A_mesh_direct = _project_vector(new_am_x * dt**2, new_am_y * dt**2, R_scale)
-
-    # Relative-acceleration history check
-
-    arel_new_dofs = a0dt_new + (urel_new_dofs - u0_new - a0dt_new) / gamma
-    arel_err = numpy.linalg.norm((arel_new_dofs - A_rel) * u_scale / dt)
-    log.info(f'[AREL HISTORY CHECK] error={arel_err:.6e} m/s2')
-
-    vm_target = numpy.column_stack((new_vm_x, new_vm_y))
-    am_target = numpy.column_stack((new_am_x, new_am_y))
-
-    def check_vm_transfer(label, coeffs):
-        val = function.eval(new_dof_sample.bind(new_ns.dm / dynamic.timestep), arguments={'dm': coeffs})
-        val = numpy.asarray(val / 'm/s', dtype=float)
-        err = numpy.linalg.norm(val - vm_target, axis=1)
-        rms = numpy.sqrt(numpy.mean(err**2))
-        ref = numpy.sqrt(numpy.mean(numpy.linalg.norm(vm_target, axis=1)**2))
-        log.info(
-            f'[VM TRANSFER] {label}: max={err.max():.6e} m/s, '
-            f'RMS={rms:.6e} m/s, relRMS={rms/max(ref,1e-30):.6e}'
-        )
-
-    def check_am_transfer(label, coeffs):
-        val = function.eval(new_dof_sample.bind(new_ns.dm / dynamic.timestep**2), arguments={'dm': coeffs})
-        val = numpy.asarray(val / 'm/s2', dtype=float)
-        err = numpy.linalg.norm(val - am_target, axis=1)
-        rms = numpy.sqrt(numpy.mean(err**2))
-        ref = numpy.sqrt(numpy.mean(numpy.linalg.norm(am_target, axis=1)**2))
-        log.info(
-            f'[AM TRANSFER] {label}: max={err.max():.6e} m/s2, '
-            f'RMS={rms:.6e} m/s2, relRMS={rms/max(ref,1e-30):.6e}'
-        )
-
-    check_vm_transfer('direct L2 projection', V_mesh_direct)
-    check_am_transfer('direct L2 projection', A_mesh_direct)
-
-    check_vm_transfer('synchronized current state', V_mesh)
-    check_am_transfer('synchronized current state', A_mesh)
-
-    # Direct projection with stationary outer-boundary correction
-    outer_mask = numpy.isfinite(dm_outer_cons)
-
-    V_mesh_direct_outer = V_mesh_direct.copy()
-    A_mesh_direct_outer = A_mesh_direct.copy()
-
-    V_mesh_direct_outer[outer_mask] = 0.
-    A_mesh_direct_outer[outer_mask] = 0.
-
-    check_vm_transfer('direct L2 projection + outer BC', V_mesh_direct_outer)
-    check_am_transfer('direct L2 projection + outer BC', A_mesh_direct_outer)
-
-    # ------------------------------------------------------------------
-    # 11. Check synchronized interface state at remesh    
-    # ------------------------------------------------------------------
-
-    ns_check = Namespace()
-
-    ns_check.h = function.replace_arguments(new_ns.dm, [('dm', 'h')])
-    vm_gamma, vs_gamma = function.eval(
-        [zipped_traction.bind(ns_check.h / dynamic.timestep),
-        zipped_traction.bind(new_ns.v)],
-        arguments=dict(args, h=vm_new_dofs))
-
-    am_gamma, as_gamma = function.eval(
-        [zipped_traction.bind(ns_check.h / dynamic.timestep**2),
-        zipped_traction.bind(new_ns.a)],
-        arguments=dict(args, h=am_new_dofs))
-    
-    dv = numpy.linalg.norm(numpy.asarray((vm_gamma - vs_gamma) / 'm/s'), axis=-1)
-    da = numpy.linalg.norm(numpy.asarray((am_gamma - as_gamma) / 'm/s2'), axis=-1)
-
-    vs_ref = max(numpy.linalg.norm(numpy.asarray(vs_gamma / 'm/s'), axis=-1).max(), 1e-30)
-    as_ref = max(numpy.linalg.norm(numpy.asarray(as_gamma / 'm/s2'), axis=-1).max(), 1e-30)
-
-    log.info(f'[INTERFACE AT REMESH] ||a_m-a_s|| max={da.max():.6e} m/s2, rel={da.max()/as_ref:.6e}')
-    log.info(f'[INTERFACE AT REMESH] ||v_m-v_s|| max={dv.max():.6e} m/s, rel={dv.max()/vs_ref:.6e}')
 
     # ------------------------------------------------------------------
     # 12. Build new_args
@@ -1507,25 +1386,6 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
 
     log.info(f'[TRANSFER CHECK] v_mesh: max={abs_err.max():.6e} m/s, RMS={rms_err:.6e} m/s, relRMS={rel_rms:.6e}')
 
-    # Acceleration field immediately after remesh
-    am_restart = numpy.asarray(
-        function.eval(new_dof_sample.bind(new_ns.am), arguments=new_args) / 'm/s2',
-        dtype=float,
-    )
-
-    # Old acceleration evaluated at exactly the same new-mesh sample points
-    am_target = numpy.column_stack((new_am_x, new_am_y))
-
-    # Spatial error introduced by remeshing/projection
-    am_transfer_error = am_restart - am_target
-
-    errmag = numpy.linalg.norm(am_transfer_error, axis=1)
-    ierr = numpy.argmax(errmag)
-
-    log.info(
-        f'[AM SEED] max|a_new-a_old|={errmag[ierr]:.6e} m/s2 at '
-        f'x=({new_dof_x_m[ierr,0]:.6e}, {new_dof_x_m[ierr,1]:.6e}) m'
-    )
     
     # ------------------------------------------------------------------
     # 13. Verification checks
@@ -1599,7 +1459,6 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
         urel_field = new_ns.urel,
         arel_field = new_ns.arel,
 
-        DuDt_field = ns_f.DuDt,
 
         p_field    = new_ns.p,
 
@@ -1619,19 +1478,6 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
         fluid_traction_field = ns_f.traction,
         solid_traction_field = new_ns.tsolid,
 
-        # Acceleration seed diagnostic
-        transfer_sample       = new_dof_sample,
-        transfer_x0_m         = new_dof_x_m.copy(),
-        am_restart_ms2        = am_restart.copy(),
-        am_transfer_error_ms2 = am_transfer_error.copy(),
-
-        solid_residual_terms = dict(
-            internal=res_d_internal,
-            inertia=res_d_inertia,
-            cmforce=res_d_cmforce,
-            fluid_reaction=res_d_fluid_reaction,
-        ),
-        direct_traction=res_d_traction,
     )
     return (
         new_ns, new_res, new_cons, new_ucons, new_system,
@@ -2100,7 +1946,6 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
             res_d_fluid_lift = function.replace_arguments(topo['fluid'].integral('(dtest_i ρf DuDt_i + ∇_j(dtest_i) σ_ij) dV' @ ns, degree=4), {'dtest': function.arguments_for(res)['dtest'] * dsolid})
 
             res += res_d_fluid_lift
-            res_d_fluid_direct = topo['fluid'].boundary['cylinder'].integral('dtest_i σ_ij n_j dS' @ ns, degree=4)
 
         # Zero initial velocity
         args['u'] = numpy.zeros(function.arguments_for(res)['u'].shape)
@@ -2174,42 +2019,8 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
     particle_csv.write_text('time,step,L_particle,B_particle,deformation_index\n')
 
     for istep, t in enumerate(log.iter.fraction('timestep', dynamic.times) if dynamic else [Time.wrap(float('inf'))], start=1):
-
-        if has_remeshed and 'dm' in args:
-            dm_n = args['dm']
-            dm0 = args['dm0']
-            V0 = args['vm0δt']
-            A0 = args['am0δt2']
-            δA = (dm_n - dm0 - V0 - 0.5*A0) / dynamic.beta
-            Vn = V0 + A0 + dynamic.gamma*δA
-            An = A0 + δA
-
-            dm_before_solve = dm_n.copy()
-            Vn_before_solve = Vn.copy()
-            An_before_solve = An.copy()
-
-            def _Jf_with_dm(dm_test):
-                test_args = dict(args)
-                test_args['dm'] = dm_test
-                return function.eval(Jfluid_bz, arguments=test_args)
-
-            J_cur = _Jf_with_dm(dm_n)
-            J_vel = _Jf_with_dm(dm_n + Vn)
-            J_acc = _Jf_with_dm(dm_n + 0.5*An)
-            J_full = _Jf_with_dm(dm_n + Vn + 0.5*An)
-            J_lin = _Jf_with_dm(dm_n + (dm_n - dm0))
-
-            norm_An = numpy.linalg.norm(An)
-            norm_A0 = numpy.linalg.norm(A0)
-            acc_cos = numpy.sum(An*A0) / max(norm_An*norm_A0, 1e-30)
-            acc_amp_ratio = norm_An / max(norm_A0, 1e-30)
-            R_m = float(domain.cylinder_radius / 'm')
-            max_V_inc = numpy.linalg.norm(Vn, axis=1).max() * R_m
-            max_A_inc = 0.5 * numpy.linalg.norm(An, axis=1).max() * R_m
-
-            log.info(f'[MESH PREDICTOR PARTS] Jcur={J_cur.min():.6e}, Jvel={J_vel.min():.6e}, Jacc={J_acc.min():.6e}, Jfull={J_full.min():.6e}, Jlinear={J_lin.min():.6e}')
-            log.info(f'[MESH PREDICTOR HISTORY] cos(A_n,A_nm1)={acc_cos:.6e}, ||A_n||/||A_nm1||={acc_amp_ratio:.6e}, max|dt*v_m|={max_V_inc:.6e} m, max|0.5*dt^2*a_m|={max_A_inc:.6e} m')
-
+            if has_remeshed and 'dm' in args:
+                dm_n = args['dm'].copy()
     # ------------------------------------------------------------
     # Time integration predictor/update
     # ------------------------------------------------------------
@@ -2228,22 +2039,6 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
                 args = dynamic.newmark_defo_args_named(
                     args, name='dm', d0_name='dm0',
                     u0dt_name='vm0δt', a0dt2_name='am0δt2')
-                
-            if has_remeshed and istep % 20 == 0:
-
-                R_m = float(domain.cylinder_radius / 'm')
-                dt_ = float(dynamic.timestep / 's')
-
-                e_d0 = numpy.linalg.norm(args['dm0'] - dm_n, axis=1).max() * R_m
-                e_v0 = numpy.linalg.norm(args['vm0δt'] - Vn, axis=1).max() * R_m / dt_
-                e_a0 = numpy.linalg.norm(args['am0δt2'] - An, axis=1).max() * R_m / dt_**2
-
-                log.info(
-                    f'[NEWMARK SHIFT CHECK] '
-                    f'dm0-dm_n={e_d0:.6e} m, '
-                    f'vm0-vm_n={e_v0:.6e} m/s, '
-                    f'am0-am_n={e_a0:.6e} m/s2'
-                )
 
         # ------------------------------------------------------------
         # Predictor-state diagnostic before Newton
@@ -2251,8 +2046,6 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
         if has_remeshed:
 
             Jf_pred = function.eval(Jfluid_bz, arguments=args)
-            Js_pred = function.eval(Jsolid_bz, arguments=args)
-
             if Jf_pred.min() < predictor_J_safety:
 
                 dm_pred = args['dm'].copy()
@@ -2270,39 +2063,11 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
                     f'Jf_min={Jf_pred.min():.6e}'
                 )
 
-            log.info(
-                f'[PREDICTOR] '
-                f'J fluid min/max: {Jf_pred.min():.6e}, {Jf_pred.max():.6e} | '
-                f'J solid min/max: {Js_pred.min():.6e}, {Js_pred.max():.6e}')
 
         # ------------------------------------------------------------
         # Solve nonlinear system
         # ------------------------------------------------------------
 
-        check_newton_jump = has_remeshed and istep <= fluid_state['remesh_istep'] + 2
-
-        if check_newton_jump:
-            before_newton = {
-                name: args[name].copy()
-                for name in ('dm', 'd', 'cm', 'lam')}
-
-        # Residual of each equation at the predictor, before Newton.
-        if has_remeshed and istep == fluid_state['remesh_istep'] + 1:
-
-            free_d = ~numpy.isfinite(cons['d']).reshape(-1)
-
-            d_terms = {}
-            
-            for name, term in fluid_state['solid_residual_terms'].items():
-            
-                values = numpy.asarray(function.eval(term.derivative('dtest'), arguments=args), dtype=float).reshape(-1)[free_d]
-                d_terms[name] = values
-            
-                log.info(
-                    f'[D-RESIDUAL TERM] {name}: '
-                    f'L2={numpy.linalg.norm(values):.6e}, '
-                    f'max={numpy.max(numpy.abs(values)):.6e}')
-            
             d_sum = numpy.sum(numpy.stack(list(d_terms.values())), axis=0)
             d_total = numpy.asarray(function.eval(res.derivative('dtest'), arguments=args), dtype=float).reshape(-1)[free_d]
             
@@ -2330,41 +2095,20 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
                     f'[PRE-NEWTON RESIDUAL] {trial_name}: '
                     f'L2={numpy.linalg.norm(values):.6e}, '
                     f'max={numpy.max(numpy.abs(values)):.6e}')
-        if has_remeshed and istep == fluid_state['remesh_istep'] + 1:
-            log.info('[SUBSYSTEM TEST] dm+lam START')
         
-            mesh_test_solution = fluid_state['mesh_test_system'].solve(
-                constrain={'dm': cons['dm']},
-                arguments=dict(args),
-                tol=1e-9,
-            )
-        
-            log.info('[SUBSYSTEM TEST] dm+lam PASSED')
+       if has_remeshed and istep == fluid_state['remesh_istep'] + 1:
+        log.info('[SUBSYSTEM TEST] dm+lam START')
+    
+        mesh_test_solution = fluid_state['mesh_test_system'].solve(
+            constrain={'dm': cons['dm']},
+            arguments=dict(args),
+            tol=1e-9,
+        )
+    
+        log.info('[SUBSYSTEM TEST] dm+lam PASSED')
         
         try:
-            args = system.solve(constrain=cons, arguments=args, tol=1e-9)
-
-            if check_newton_jump:
-                R_m = float(domain.cylinder_radius / 'm')
-                dt_s = float(dynamic.timestep / 's')
-
-                for name in ('dm', 'd', 'cm', 'lam'):
-                    change = args[name] - before_newton[name]
-                    magnitude = numpy.linalg.norm(change.reshape(-1, change.shape[-1]), axis=1).max() if name in ('dm', 'd', 'lam') else numpy.abs(change).max()
-
-                    if name in ('dm', 'd'):
-                        displacement_m = magnitude * R_m
-                        implied_acceleration = (
-                            displacement_m / (dynamic.beta * dt_s**2)
-                        )
-                        log.info(
-                            f'[NEWTON CHANGE] {name}: '
-                            f'max={displacement_m:.6e} m, '
-                            f'implied acceleration={implied_acceleration:.6e} m/s2')
-                    else:
-                        log.info(
-                            f'[NEWTON CHANGE] {name}: '
-                            f'max coefficient change={magnitude:.6e}')            
+            args = system.solve(constrain=cons, arguments=args, tol=1e-9)  
 
         except Exception:
             log.info('Newton failed. Mesh quality of current prediction / last available state:')
@@ -2394,27 +2138,6 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
 
             if not numpy.all(numpy.isfinite(Js_check)) or Js_check.min() <= 0:
                 raise RuntimeError(f'Invalid solid state after Newton: Js_min={Js_check.min():.6e}')
-
-        # Put the new MESH STEP CONSISTENCY diagnostic here.
-        if has_remeshed and 'dm' in args:
-            
-            Δdm_solve = args['dm'] - dm_before_solve
-            Δdm_vel   = Vn_before_solve
-
-            err_vel  = Δdm_solve - Δdm_vel
-
-            R_m = float(domain.cylinder_radius / 'm')
-
-            max_solve = numpy.linalg.norm(Δdm_solve, axis=1).max() * R_m
-            max_vel   = numpy.linalg.norm(Δdm_vel, axis=1).max() * R_m
-            max_acc   = 0.5 * numpy.linalg.norm(An_before_solve, axis=1).max() * R_m
-            max_err_vel  = numpy.linalg.norm(err_vel, axis=1).max() * R_m
-
-            rel_err_vel = max_err_vel / max(max_solve, 1e-30)
-
-            log.info(f'[MESH STEP CONSISTENCY] max|dm_np1-dm_n|={max_solve:.6e} m')
-            log.info(f'[MESH STEP CONSISTENCY] max|dt*vm_n|={max_vel:.6e} m, max|0.5*dt^2*am_n|={max_acc:.6e} m')
-            log.info(f'[MESH STEP CONSISTENCY] ||Δdm-dt*vm_n|| max={max_err_vel:.6e} m, rel={rel_err_vel:.6e}')
 
         # ------------------------------------------------------------
         # Time-step size used for cumulative diagnostics
@@ -2472,147 +2195,9 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
 
             log.info(f'[INTERFACE STEP] ||dm-(ds-ds_r)|| max={dd.max():.6e} m, /R={dd.max()/R_m:.6e}')
             log.info(f'[INTERFACE STEP] ||vm-vs|| max={dv.max():.6e} m/s, rel={dv.max()/vs_ref:.6e}')
-            log.info(f'[INTERFACE STEP] ||am-as|| max={da.max():.6e} m/s2, rel={da.max()/as_ref:.6e}')
+            log.info(f'[INTERFACE STEP] ||am-as|| max={da.max():.6e} m/s2, rel={da.max()/as_ref:.6e}')           
 
-            # --------------------------------------------------------------
-            # ADD ACCELERATION SEED DIAGNOSTIC HERE
-            # --------------------------------------------------------------
 
-            age = istep - fluid_state['remesh_istep']
-
-            if 1 <= age <= 10:
-
-                sample = fluid_state['transfer_sample']
-
-                am_now = numpy.asarray(
-                    function.eval(
-                        sample.bind(fluid_state['a_field']),
-                        arguments=args
-                    ) / 'm/s2',
-                    dtype=float,
-                )
-
-                am0  = fluid_state['am_restart_ms2']
-                seed = fluid_state['am_transfer_error_ms2']
-
-                dam = am_now - am0
-
-                seed_norm = numpy.linalg.norm(seed)
-                dam_norm  = numpy.linalg.norm(dam)
-
-                cos_seed = numpy.sum(seed * dam) / max(
-                    seed_norm * dam_norm, 1e-30)
-
-                amplification = dam_norm / max(seed_norm, 1e-30)
-
-                seedmag = numpy.linalg.norm(seed, axis=1)
-                dammag  = numpy.linalg.norm(dam, axis=1)
-
-                i_seed = numpy.argmax(seedmag)
-                i_dam  = numpy.argmax(dammag)
-
-                x0 = fluid_state['transfer_x0_m']
-
-                dx_peak = numpy.linalg.norm(
-                    x0[i_seed] - x0[i_dam])
-
-                dam_prev = fluid_state['dam_previous']
-
-                if dam_prev is None:
-                    cos_prev = numpy.nan
-                else:
-                    cos_prev = numpy.sum(dam * dam_prev) / max(
-                        numpy.linalg.norm(dam)
-                        * numpy.linalg.norm(dam_prev),
-                        1e-30)
-
-                fluid_state['dam_previous'] = dam.copy()
-
-                log.info(
-                    f'[AM SEED TEST] post-remesh step={age}, '
-                    f'||Δam||/||seed||={amplification:.6e}, '
-                    f'cos(seed,Δam)={cos_seed:.6e}, '
-                    f'cos(Δam_n,Δam_nm1)={cos_prev:.6e}, '
-                    f'peak-distance={dx_peak:.6e} m'
-                )
-
-            
-
-            if istep % 20 == 0:
-
-                x_am = numpy.asarray(function.eval(x_bz, arguments=args) / 'm')
-
-                am_g, arel_g, DuDt_g = function.eval([fluid_bezier.bind(fluid_state['a_field']),
-                        fluid_bezier.bind(fluid_state['arel_field']),
-                        fluid_bezier.bind(fluid_state['DuDt_field'])], arguments=args)
-
-                am_g   = numpy.asarray(am_g / 'm/s2')
-                arel_g = numpy.asarray(arel_g / 'm/s2')
-                DuDt_g = numpy.asarray(DuDt_g / 'm/s2')
-
-                amag = numpy.linalg.norm(am_g, axis=-1)
-                rmag = numpy.linalg.norm(arel_g, axis=-1)
-
-                at_g = am_g + arel_g
-                tmag = numpy.linalg.norm(at_g, axis=-1)
-                dmag = numpy.linalg.norm(DuDt_g, axis=-1)
-
-                ia = numpy.argmax(amag)
-
-                cos_ar = numpy.dot(am_g[ia], arel_g[ia]) / max(amag[ia] * rmag[ia], 1e-30)
-
-                log.info(
-                    f'[MESH ACC LOCATION] max|am|={amag[ia]:.6e} m/s2 at '
-                    f'x=({x_am[ia,0]:.6e}, {x_am[ia,1]:.6e}) m')
-
-                log.info(
-                    f'[FLUID ACC DECOMP] at max|am|: '
-                    f'|am|={amag[ia]:.6e}, '
-                    f'|arel|={rmag[ia]:.6e}, '
-                    f'|am+arel|={tmag[ia]:.6e}, '
-                    f'|DuDt|={dmag[ia]:.6e} m/s2, '
-                    f'cos(am,arel)={cos_ar:.6e}')
-
-                # --------------------------------------------------------------
-                # Direct Newmark reconstruction check
-                # --------------------------------------------------------------
-
-                beta  = dynamic.beta
-                gamma = dynamic.gamma
-
-                # Direct Newmark reconstruction check
-                δA_chk = (args['dm'] - args['dm0'] - args['vm0δt'] - .5*args['am0δt2']) / dynamic.beta
-                V_chk = args['vm0δt'] + args['am0δt2'] + dynamic.gamma*δA_chk
-                A_chk = args['am0δt2'] + δA_chk
-                Arel_chk = args['a0δt'] + (args['u'] - args['u0'] - args['a0δt']) / dynamic.gamma
-
-                dm_template = fluid_state['d_field']
-                urel_template = fluid_state['urel_field']
-
-                vm_chk_field = function.replace_arguments(dm_template, [('dm', 'vmcheck')]) / dynamic.timestep
-                am_chk_field = function.replace_arguments(dm_template, [('dm', 'amcheck')]) / dynamic.timestep**2
-                arel_chk_field = function.replace_arguments(urel_template, [('u', 'arelcheck')]) / dynamic.timestep
-
-                check_args = dict(args, vmcheck=V_chk, amcheck=A_chk, arelcheck=Arel_chk)
-
-                vm_sym, am_sym, arel_sym, vm_chk, am_chk, arel_chk = function.eval([
-                    fluid_bezier.bind(fluid_state['v_field']), fluid_bezier.bind(fluid_state['a_field']),
-                    fluid_bezier.bind(fluid_state['arel_field']), fluid_bezier.bind(vm_chk_field),
-                    fluid_bezier.bind(am_chk_field), fluid_bezier.bind(arel_chk_field)], arguments=check_args)
-
-                vm_sym, vm_chk = numpy.asarray(vm_sym/'m/s'), numpy.asarray(vm_chk/'m/s')
-                am_sym, am_chk = numpy.asarray(am_sym/'m/s2'), numpy.asarray(am_chk/'m/s2')
-                arel_sym, arel_chk = numpy.asarray(arel_sym/'m/s2'), numpy.asarray(arel_chk/'m/s2')
-
-                ev = numpy.linalg.norm(vm_sym - vm_chk, axis=-1)
-                ea = numpy.linalg.norm(am_sym - am_chk, axis=-1)
-                er = numpy.linalg.norm(arel_sym - arel_chk, axis=-1)
-
-                vref = max(numpy.linalg.norm(vm_sym, axis=-1).max(), 1e-30)
-                aref = max(numpy.linalg.norm(am_sym, axis=-1).max(), 1e-30)
-                rref = max(numpy.linalg.norm(arel_sym, axis=-1).max(), 1e-30)
-
-                log.info(f'[NEWMARK RECON CHECK] vm err={ev.max():.6e} m/s, rel={ev.max()/vref:.6e} | am err={ea.max():.6e} m/s2, rel={ea.max()/aref:.6e} | arel err={er.max():.6e} m/s2, rel={er.max()/rref:.6e}')
         # ------------------------------------------------------------
         # Remeshing trigger — checked after every successful solve
         # ------------------------------------------------------------
@@ -2636,37 +2221,7 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
                 need_remesh = True
 
             if need_remesh:
-                if not has_remeshed:
-
-                    free_d = ~numpy.isfinite(cons['d']).reshape(-1)
-                
-                    R_lift = numpy.asarray(function.eval(res_d_fluid_lift.derivative('dtest'), arguments=args), dtype=float).reshape(-1)[free_d]
-                    R_direct = numpy.asarray(function.eval(res_d_fluid_direct.derivative('dtest'), arguments=args), dtype=float).reshape(-1)[free_d]
-                    diff = R_direct - R_lift
-                
-                    log.info(
-                        f'[OLD COUPLING CHECK] lift: '
-                        f'L2={numpy.linalg.norm(R_lift):.6e}, '
-                        f'max={numpy.max(numpy.abs(R_lift)):.6e}'
-                    )
-                
-                    log.info(
-                        f'[OLD COUPLING CHECK] direct: '
-                        f'L2={numpy.linalg.norm(R_direct):.6e}, '
-                        f'max={numpy.max(numpy.abs(R_direct)):.6e}'
-                    )
-                
-                    log.info(
-                        f'[OLD COUPLING CHECK] direct-lift: '
-                        f'L2={numpy.linalg.norm(diff):.6e}, '
-                        f'max={numpy.max(numpy.abs(diff)):.6e}, '
-                        f'rel={numpy.linalg.norm(diff) / max(numpy.linalg.norm(R_lift), 1e-30):.6e}'
-                    )
-                
-                    log.info(
-                        f'[OLD COUPLING CHECK] direct+lift: '
-                        f'L2={numpy.linalg.norm(R_direct + R_lift):.6e}'
-                    )
+    
                 remesh_count += 1
 
                 # Capture old-mesh state for diagnostics BEFORE remeshing.
@@ -2702,20 +2257,7 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
                     remesh_count,
                 )
                 
-                free_d = ~numpy.isfinite(cons['d']).reshape(-1)
-
-                for name, term in fluid_state['solid_residual_terms'].items():
-                
-                    values = numpy.asarray(function.eval(term.derivative('dtest'), arguments=args), dtype=float).reshape(-1)[free_d]
-            
-                    log.info(
-                        f'[D-RESIDUAL AT REMESH] {name}: '
-                        f'L2={numpy.linalg.norm(values):.6e}, '
-                        f'max={numpy.max(numpy.abs(values)):.6e}'
-                    )
-
                 fluid_state['remesh_istep'] = istep
-                fluid_state['dam_previous'] = None
 
                 has_remeshed = True
 
