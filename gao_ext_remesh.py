@@ -555,8 +555,8 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     new_res += topo['solid'].integral('cmtest_i x_i dVref' @ new_ns, degree=4) / domain.cylinder_radius**3
 
     # Mesh extension for d_m (elasticity-type smoothing, epoch reference new_geom)
-    new_res += Pressure('1Pa') * new_topo['fluid'].integral('∇ref_j(dmtest_i) Pmesh_ij dVref' @ ns_m, degree=4)
-
+    res_mesh_bulk = Pressure('1Pa') * new_topo['fluid'].integral('∇ref_j(dmtest_i) Pmesh_ij dVref' @ ns_m, degree=4)
+    new_res += res_mesh_bulk
     # Fluid momentum and incompressibility, gradients w.r.t. moving x_m
     res_fluid_am   = new_topo['fluid'].integral('utest_i ρf am_i dV' @ ns_f, degree=4)
     res_fluid_arel = new_topo['fluid'].integral('utest_i ρf arel_i dV' @ ns_f, degree=4)
@@ -701,11 +701,11 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     # The genuine fluid force on the solid is already supplied by the traction term above.  
     # The coupling is therefore one-directional in the kinematic sense:
     
-    # d_s  ——> interface constraint ——>  d_m
-    new_res += zipped_traction.integral(_dot2(ns_m.dmtest, new_ns.lam) * new_ns.dS)
-
-    # Constraint term: ∫ δλ·(d_m − (d_s − d_s^remesh))
-    new_res += zipped_traction.integral(_dot2(new_ns.lamtest, new_ns.dm - dm_interface_target_expr) * new_ns.dS)
+    res_mesh_lam = zipped_traction.integral(_dot2(ns_m.dmtest, new_ns.lam) * new_ns.dS)
+    res_mesh_constraint = zipped_traction.integral(_dot2(new_ns.lamtest, new_ns.dm - dm_interface_target_expr) * new_ns.dS)
+    
+    new_res += res_mesh_lam
+    new_res += res_mesh_constraint
 
     # ------------------------------------------------------------------
     # 7. Rebuild constraints
@@ -767,6 +767,11 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     # 8. Build new Newton system
     # ------------------------------------------------------------------
     new_system = System(new_res, trial=['d', 'cm', 'dm', 'u', 'p', 'lam'], test=['dtest', 'cmtest', 'dmtest', 'utest', 'ptest', 'lamtest'])
+    mesh_test_system = System(
+        res_mesh_bulk + res_mesh_lam + res_mesh_constraint,
+        trial=['dm', 'lam'],
+        test=['dmtest', 'lamtest'],
+    )
 
     # ------------------------------------------------------------------
     # 9. Transfer solution to new mesh (physical coordinates, physical velocity, full Newmark history for both d_m and u_rel)
@@ -1609,6 +1614,7 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
         # Fixed outer-boundary constraint and interface data
         dm_outer_cons       = dm_outer_cons,
         solid_cyl_gauss     = solid_cyl_gauss,
+        mesh_test_system = mesh_test_system,
 
         fluid_traction_field = ns_f.traction,
         solid_traction_field = new_ns.tsolid,
@@ -2324,6 +2330,17 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
                     f'[PRE-NEWTON RESIDUAL] {trial_name}: '
                     f'L2={numpy.linalg.norm(values):.6e}, '
                     f'max={numpy.max(numpy.abs(values)):.6e}')
+        if has_remeshed and istep == fluid_state['remesh_istep'] + 1:
+            log.info('[SUBSYSTEM TEST] dm+lam START')
+        
+            mesh_test_solution = fluid_state['mesh_test_system'].solve(
+                constrain={'dm': cons['dm']},
+                arguments=dict(args),
+                tol=1e-9,
+            )
+        
+            log.info('[SUBSYSTEM TEST] dm+lam PASSED')
+        
         try:
             args = system.solve(constrain=cons, arguments=args, tol=1e-9)
 
