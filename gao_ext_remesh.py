@@ -756,6 +756,13 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
         trial=['d', 'cm', 'dm', 'lam'],
         test=['dtest', 'cmtest', 'dmtest', 'lamtest'],
     )
+    solid_mesh_traction_test_system = System(
+        res_d_internal + res_d_inertia + res_d_cmforce + res_cm
+        + res_d_traction
+        + res_mesh_bulk + res_mesh_lam + res_mesh_constraint,
+        trial=['d', 'cm', 'dm', 'lam'],
+        test=['dtest', 'cmtest', 'dmtest', 'lamtest'],
+    )
     # ------------------------------------------------------------------
     # 9. Transfer solution to new mesh (physical coordinates, physical velocity, full Newmark history for both d_m and u_rel)
     # ------------------------------------------------------------------
@@ -1493,6 +1500,7 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
 
         solid_mesh_test_system = solid_mesh_test_system,
         solid_mesh_reaction_test_system = solid_mesh_reaction_test_system,
+        solid_mesh_traction_test_system = solid_mesh_traction_test_system,
 
         fluid_traction_field = ns_f.traction,
         solid_traction_field = new_ns.tsolid,
@@ -2106,15 +2114,15 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
             
             log.info('[SUBSYSTEM TEST] d+cm+dm+lam NO REACTION PASSED')
             
-            log.info('[SUBSYSTEM TEST] d+cm+dm+lam WITH REACTION START')
-            
-            fluid_state['solid_mesh_reaction_test_system'].solve(
+            log.info('[SUBSYSTEM TEST] d+cm+dm+lam DIRECT TRACTION START')
+
+            fluid_state['solid_mesh_traction_test_system'].solve(
                 constrain={'d': cons['d'], 'dm': cons['dm']},
                 arguments=dict(args),
                 tol=1e-9,
             )
             
-            log.info('[SUBSYSTEM TEST] d+cm+dm+lam WITH REACTION PASSED')
+            log.info('[SUBSYSTEM TEST] d+cm+dm+lam DIRECT TRACTION PASSED')
         
         try:
             args = system.solve(constrain=cons, arguments=args, tol=1e-9)  
