@@ -628,6 +628,7 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
         f'[INTERFACE TRACE BASIS] '
         f'scalar P2 trace dofs={len(i_dm_gamma_scalar)}'
     )
+    res_d_traction = zipped_traction.integral(_dot2(new_ns.dtest, ns_f.traction) * new_ns.dS)
 
     test_unit = Pressure('1Pa') * Length('1m')
     dtest_dimless = new_ns.dtest * test_unit
