@@ -2067,35 +2067,6 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
         # ------------------------------------------------------------
         # Solve nonlinear system
         # ------------------------------------------------------------
-
-            d_sum = numpy.sum(numpy.stack(list(d_terms.values())), axis=0)
-            d_total = numpy.asarray(function.eval(res.derivative('dtest'), arguments=args), dtype=float).reshape(-1)[free_d]
-            
-            log.info(
-                f'[D-RESIDUAL SUM] '
-                f'L2={numpy.linalg.norm(d_sum):.6e}, '
-                f'max={numpy.max(numpy.abs(d_sum)):.6e}, '
-                f'sum-error={numpy.linalg.norm(d_sum-d_total):.6e}')
-            for trial_name, test_name in (
-                ('d', 'dtest'),       # solid momentum
-                ('cm', 'cmtest'),     # solid centre
-                ('dm', 'dmtest'),     # mesh equilibrium
-                ('u', 'utest'),       # fluid momentum
-                ('p', 'ptest'),       # fluid incompressibility
-                ('lam', 'lamtest'),   # interface displacement
-            ):
-                values = numpy.asarray(function.eval(res.derivative(test_name), arguments=args), dtype=float).reshape(-1)
-
-                # Dirichlet equations are not solved by Newton.
-                if trial_name in cons:
-                    free = ~numpy.isfinite(cons[trial_name]).reshape(-1)
-                    values = values[free]
-
-                log.info(
-                    f'[PRE-NEWTON RESIDUAL] {trial_name}: '
-                    f'L2={numpy.linalg.norm(values):.6e}, '
-                    f'max={numpy.max(numpy.abs(values)):.6e}')
-        
         if has_remeshed and istep == fluid_state['remesh_istep'] + 1:
             log.info('[SUBSYSTEM TEST] dm+lam START')
 
