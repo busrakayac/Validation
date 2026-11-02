@@ -2019,8 +2019,8 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
     particle_csv.write_text('time,step,L_particle,B_particle,deformation_index\n')
 
     for istep, t in enumerate(log.iter.fraction('timestep', dynamic.times) if dynamic else [Time.wrap(float('inf'))], start=1):
-            if has_remeshed and 'dm' in args:
-                dm_n = args['dm'].copy()
+        if has_remeshed and 'dm' in args:
+            dm_n = args['dm'].copy()
     # ------------------------------------------------------------
     # Time integration predictor/update
     # ------------------------------------------------------------
@@ -2096,16 +2096,16 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
                     f'L2={numpy.linalg.norm(values):.6e}, '
                     f'max={numpy.max(numpy.abs(values)):.6e}')
         
-       if has_remeshed and istep == fluid_state['remesh_istep'] + 1:
-        log.info('[SUBSYSTEM TEST] dm+lam START')
-    
-        mesh_test_solution = fluid_state['mesh_test_system'].solve(
-            constrain={'dm': cons['dm']},
-            arguments=dict(args),
-            tol=1e-9,
-        )
-    
-        log.info('[SUBSYSTEM TEST] dm+lam PASSED')
+        if has_remeshed and istep == fluid_state['remesh_istep'] + 1:
+            log.info('[SUBSYSTEM TEST] dm+lam START')
+
+            mesh_test_solution = fluid_state['mesh_test_system'].solve(
+                constrain={'dm': cons['dm']},
+                arguments=dict(args),
+                tol=1e-9,
+            )
+
+            log.info('[SUBSYSTEM TEST] dm+lam PASSED')
         
         try:
             args = system.solve(constrain=cons, arguments=args, tol=1e-9)  
