@@ -629,6 +629,7 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
         f'scalar P2 trace dofs={len(i_dm_gamma_scalar)}'
     )
     res_d_traction = zipped_traction.integral(_dot2(new_ns.dtest, ns_f.traction) * new_ns.dS)
+    new_res += res_d_traction
 
     test_unit = Pressure('1Pa') * Length('1m')
     dtest_dimless = new_ns.dtest * test_unit
@@ -658,7 +659,7 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     utest_from_dtest = numpy.reshape(utest_flat, function.arguments_for(utest_dimless)['utest'].shape)
 
     res_d_fluid_reaction = function.replace_arguments(res_fluid_mom, {'utest': utest_from_dtest})
-    new_res += res_d_fluid_reaction
+    #new_res += res_d_fluid_reaction
 
     # Interface target 
     d_s_remesh_coeffs = numpy.array(args['d'], copy=True)
