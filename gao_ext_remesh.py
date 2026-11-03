@@ -1097,6 +1097,22 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
 
     # Interface Lagrange multiplier
     new_args['lam'] = numpy.zeros(function.arguments_for(new_res)['lam'].shape)
+    if remesh_index == 1 and 'Rreact_old_diag' in fluid_state:
+        Ru_new = numpy.asarray(
+            function.eval(res_fluid_mom.derivative('utest'), arguments=new_args),
+            dtype=float).reshape(-1)
+    
+        Rreact_new = Tdu.T @ Ru_new[i_u_gamma]
+        Rreact_old = fluid_state['Rreact_old_diag']
+    
+        log.info(
+            f'[REACTION REMESH COMPARE] '
+            f'||old||={numpy.linalg.norm(Rreact_old):.6e}, '
+            f'||new||={numpy.linalg.norm(Rreact_new):.6e}, '
+            f'||new-old||={numpy.linalg.norm(Rreact_new-Rreact_old):.6e}, '
+            f'||new+old||={numpy.linalg.norm(Rreact_new+Rreact_old):.6e}, '
+            f'rel={numpy.linalg.norm(Rreact_new-Rreact_old)/max(numpy.linalg.norm(Rreact_old),1e-30):.6e}'
+        )
     # Old/new traction before projected restart
     old_pres = numpy.asarray(told_pres / 'Pa', dtype=float)
     old_visc = numpy.asarray(told_visc / 'Pa', dtype=float)
@@ -2275,8 +2291,18 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
                 need_remesh = True
 
             if need_remesh:
-    
                 remesh_count += 1
+                if remesh_count == 1:
+                    Ru_old = numpy.asarray(
+                        function.eval(res_fluid_mom_old.derivative('utest'), arguments=args),
+                        dtype=float).reshape(-1)
+                
+                    Rreact_old = Tdu_old.T @ Ru_old[i_u_gamma]  
+                    fluid_state['Rreact_old_diag'] = Rreact_old.copy()
+                
+                    log.info(
+                        f'[REACTION BEFORE REMESH] '
+                        f'||R||={numpy.linalg.norm(Rreact_old):.6e}')
 
                 # Capture old-mesh state for diagnostics BEFORE remeshing.
                 # x_bz/u_bz/p_bz already carry consistent definitions
