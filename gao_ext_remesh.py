@@ -1975,7 +1975,7 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
             res_d_fluid_lift = function.replace_arguments(topo['fluid'].integral('(dtest_i ρf DuDt_i + ∇_j(dtest_i) σ_ij) dV' @ ns, degree=4), {'dtest': function.arguments_for(res)['dtest'] * dsolid})
             res_d_fluid_direct = topo['fluid'].boundary['cylinder'].integral('dtest_i σ_ij n_j dS' @ ns, degree=4)
 
-            res += res_d_fluid_direct
+            res += res_d_fluid_lift
 
         # Zero initial velocity
         args['u'] = numpy.zeros(function.arguments_for(res)['u'].shape)
@@ -2129,6 +2129,25 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
         
         try:
             args = system.solve(constrain=cons, arguments=args, tol=1e-9)  
+            if not has_remeshed and istep <= 10:
+                free_d = ~numpy.isfinite(cons['d']).reshape(-1)
+            
+                Rlift = numpy.asarray(
+                    function.eval(res_d_fluid_lift.derivative('dtest'), arguments=args),
+                    dtype=float).reshape(-1)[free_d]
+            
+                Rdir = numpy.asarray(
+                    function.eval(res_d_fluid_direct.derivative('dtest'), arguments=args),
+                    dtype=float).reshape(-1)[free_d]
+            
+                log.info(
+                    f'[LIFT-DIRECT] step={istep} '
+                    f'||lift||={numpy.linalg.norm(Rlift):.6e}, '
+                    f'||direct||={numpy.linalg.norm(Rdir):.6e}, '
+                    f'||direct-lift||={numpy.linalg.norm(Rdir-Rlift):.6e}, '
+                    f'||direct+lift||={numpy.linalg.norm(Rdir+Rlift):.6e}, '
+                    f'rel={numpy.linalg.norm(Rdir-Rlift)/max(numpy.linalg.norm(Rlift),1e-30):.6e}'
+                )
 
         except Exception:
             log.info('Newton failed. Mesh quality of current prediction / last available state:')
