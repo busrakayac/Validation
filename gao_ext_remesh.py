@@ -1960,7 +1960,8 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
 
         # Momentum balance: ρf Du/Dt = ∇σ => ∀v ∫ (v ρf Du/Dt + ∇v:σ) = ∮ v·σ·n = 0
         ns.utest = function.replace_arguments(ns.urel, 'u:utest') / fluid.viscosity / fluid.velocity**2
-        res += topo['fluid'].integral('(utest_i ρf DuDt_i + ∇_j(utest_i) σ_ij) dV' @ ns, degree=4)
+        res_fluid_mom_old = topo['fluid'].integral('(utest_i ρf DuDt_i + ∇_j(utest_i) σ_ij) dV' @ ns, degree=4)
+        res += res_fluid_mom_old
 
         # Incompressibility: div u = 0
         ns.ptest = function.replace_arguments(ns.p, 'p:ptest') / fluid.viscosity / fluid.velocity**2
@@ -1974,6 +1975,24 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
             dsolid = ~dfluid # true if dof is (partially) supported by solid domain
             res_d_fluid_lift = function.replace_arguments(topo['fluid'].integral('(dtest_i ρf DuDt_i + ∇_j(dtest_i) σ_ij) dV' @ ns, degree=4), {'dtest': function.arguments_for(res)['dtest'] * dsolid})
             res_d_fluid_direct = topo['fluid'].boundary['cylinder'].integral('dtest_i σ_ij n_j dS' @ ns, degree=4)
+
+            # Trace map: cylinder fluid-velocity test DOFs -> solid-displacement test DOFs
+            cyl_gauss = topo['fluid'].boundary['cylinder'].sample('gauss', 4)
+            
+            test_unit = Pressure('1Pa') * Length('1m')
+            dtest_dimless = ns.dtest * test_unit
+            utest_dimless = ns.utest * test_unit
+            
+            Bd4 = function.eval(cyl_gauss.bind(dtest_dimless.derivative('dtest')))
+            Bu4 = function.eval(cyl_gauss.bind(utest_dimless.derivative('utest')))
+            
+            Bd = Bd4.reshape(Bd4.shape[0] * Bd4.shape[1], -1)
+            Bu = Bu4.reshape(Bu4.shape[0] * Bu4.shape[1], -1)
+            
+            i_d_gamma = numpy.flatnonzero(numpy.linalg.norm(Bd, axis=0) > 1e-12 * numpy.linalg.norm(Bd, axis=0).max())
+            i_u_gamma = numpy.flatnonzero(numpy.linalg.norm(Bu, axis=0) > 1e-12 * numpy.linalg.norm(Bu, axis=0).max())
+            
+            Tdu_old = numpy.linalg.lstsq(Bu[:, i_u_gamma], Bd[:, i_d_gamma], rcond=None)[0]
 
             res += res_d_fluid_lift
 
@@ -2130,23 +2149,19 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
         try:
             args = system.solve(constrain=cons, arguments=args, tol=1e-9)  
             if not has_remeshed and istep <= 10:
-                free_d = ~numpy.isfinite(cons['d']).reshape(-1)
+                Ru = numpy.asarray(function.eval(res_fluid_mom_old.derivative('utest'), arguments=args), dtype=float).reshape(-1)
+                Rlift = numpy.asarray(function.eval(res_d_fluid_lift.derivative('dtest'), arguments=args), dtype=float).reshape(-1)
             
-                Rlift = numpy.asarray(
-                    function.eval(res_d_fluid_lift.derivative('dtest'), arguments=args),
-                    dtype=float).reshape(-1)[free_d]
-            
-                Rdir = numpy.asarray(
-                    function.eval(res_d_fluid_direct.derivative('dtest'), arguments=args),
-                    dtype=float).reshape(-1)[free_d]
+                Rreact = Tdu_old.T @ Ru[i_u_gamma]
+                Rlift_gamma = Rlift[i_d_gamma]
             
                 log.info(
-                    f'[LIFT-DIRECT] step={istep} '
-                    f'||lift||={numpy.linalg.norm(Rlift):.6e}, '
-                    f'||direct||={numpy.linalg.norm(Rdir):.6e}, '
-                    f'||direct-lift||={numpy.linalg.norm(Rdir-Rlift):.6e}, '
-                    f'||direct+lift||={numpy.linalg.norm(Rdir+Rlift):.6e}, '
-                    f'rel={numpy.linalg.norm(Rdir-Rlift)/max(numpy.linalg.norm(Rlift),1e-30):.6e}'
+                    f'[DISCRETE REACTION] step={istep} '
+                    f'||lift||={numpy.linalg.norm(Rlift_gamma):.6e}, '
+                    f'||reaction||={numpy.linalg.norm(Rreact):.6e}, '
+                    f'||reaction-lift||={numpy.linalg.norm(Rreact-Rlift_gamma):.6e}, '
+                    f'||reaction+lift||={numpy.linalg.norm(Rreact+Rlift_gamma):.6e}, '
+                    f'rel={numpy.linalg.norm(Rreact-Rlift_gamma)/max(numpy.linalg.norm(Rlift_gamma),1e-30):.6e}'
                 )
 
         except Exception:
