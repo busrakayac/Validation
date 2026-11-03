@@ -1973,8 +1973,9 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
 
             dsolid = ~dfluid # true if dof is (partially) supported by solid domain
             res_d_fluid_lift = function.replace_arguments(topo['fluid'].integral('(dtest_i ρf DuDt_i + ∇_j(dtest_i) σ_ij) dV' @ ns, degree=4), {'dtest': function.arguments_for(res)['dtest'] * dsolid})
+            res_d_fluid_direct = topo['fluid'].boundary['cylinder'].integral('dtest_i σ_ij n_j dS' @ ns, degree=4)
 
-            res += res_d_fluid_lift
+            res += res_d_fluid_direct
 
         # Zero initial velocity
         args['u'] = numpy.zeros(function.arguments_for(res)['u'].shape)
