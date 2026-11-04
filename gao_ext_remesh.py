@@ -628,8 +628,27 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
         f'[INTERFACE TRACE BASIS] '
         f'scalar P2 trace dofs={len(i_dm_gamma_scalar)}'
     )
-    res_d_traction = zipped_traction.integral(_dot2(new_ns.dtest, ns_f.traction) * new_ns.dS)
-    new_res += res_d_traction
+    # Fluid-solid interface multiplier: enforces urel = 0 and carries the discrete reaction.
+    fluid_stress_scale = fluid.viscosity * fluid.velocity / domain.cylinder_radius
+    
+    lamf_basis = dm_basis[i_dm_gamma_scalar]
+    
+    new_ns.lamf = (function.field('lamf', lamf_basis, shape=(2,)) * fluid_stress_scale)
+    
+    new_ns.lamftest = (function.replace_arguments(new_ns.lamf, 'lamf:lamftest') / (fluid_stress_scale * fluid.velocity * domain.cylinder_radius))
+    
+    # Fluid equation: -∫ utest · lamf
+    res_fluid_lamf = -zipped_traction.integral(_dot2(new_ns.utest, new_ns.lamf) * new_ns.dS)
+    
+    # Solid equation: +∫ dtest · lamf
+    res_solid_lamf = zipped_traction.integral(_dot2(new_ns.dtest, new_ns.lamf) * new_ns.dS)
+    
+    # No-slip constraint: urel = 0 on the interface
+    res_lamf_constraint = zipped_traction.integral(_dot2(new_ns.lamftest, new_ns.urel) * new_ns.dS)
+    
+    new_res += res_fluid_lamf
+    new_res += res_solid_lamf
+    new_res += res_lamf_constraint
 
     test_unit = Pressure('1Pa') * Length('1m')
     dtest_dimless = new_ns.dtest * test_unit
@@ -723,9 +742,9 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     ns_bc.δ = new_ns.δ
     ns_bc.epsdot = fluid.velocity / (2 * domain.cylinder_radius)
     ns_bc.uext_i = 'epsdot (δ_i0 xfnew_0 - δ_i1 xfnew_1)'
-    sqr_u = new_topo['fluid'].boundary['cylinder'].integral('urel_i urel_i dSref' @ ns_bc, degree=4) / (2 * domain.cylinder_radius * fluid.velocity**2)
-    sqr_u += new_topo['fluid'].boundary['outer'].integral('(urel_i - uext_i) (urel_i - uext_i) dSref' @ ns_bc, degree=4) / (2 * domain.cylinder_radius * fluid.velocity**2)
-
+    # sqr_u = new_topo['fluid'].boundary['cylinder'].integral('urel_i urel_i dSref' @ ns_bc, degree=4) / (2 * domain.cylinder_radius * fluid.velocity**2)
+    # sqr_u += new_topo['fluid'].boundary['outer'].integral('(urel_i - uext_i) (urel_i - uext_i) dSref' @ ns_bc, degree=4) / (2 * domain.cylinder_radius * fluid.velocity**2)
+    sqr_u = new_topo['fluid'].boundary['outer'].integral('(urel_i - uext_i) (urel_i - uext_i) dSref' @ ns_bc, degree=4) / (2 * domain.cylinder_radius * fluid.velocity**2)
 
     new_cons = System(sqr_u, trial='u').solve_constraints(droptol=1e-9, constrain=new_cons)
     new_ucons = new_cons['u'].copy()
@@ -736,7 +755,7 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     # ------------------------------------------------------------------
     # 8. Build new Newton system
     # ------------------------------------------------------------------
-    new_system = System(new_res, trial=['d', 'cm', 'dm', 'u', 'p', 'lam'], test=['dtest', 'cmtest', 'dmtest', 'utest', 'ptest', 'lamtest'])
+    new_system = System(new_res, trial=['d', 'cm', 'dm', 'u', 'p', 'lam', 'lamf'], test=['dtest', 'cmtest', 'dmtest', 'utest', 'ptest', 'lamtest', 'lamftest'])
     mesh_test_system = System(
         res_mesh_bulk + res_mesh_lam + res_mesh_constraint,
         trial=['dm', 'lam'],
@@ -1097,6 +1116,7 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
 
     # Interface Lagrange multiplier
     new_args['lam'] = numpy.zeros(function.arguments_for(new_res)['lam'].shape)
+    new_args['lamf'] = numpy.zeros(function.arguments_for(new_res)['lamf'].shape)
     if remesh_index == 1 and 'Rreact_old_diag' in fluid_state:
         Ru_new = numpy.asarray(
             function.eval(res_fluid_mom.derivative('utest'), arguments=new_args),
@@ -2151,8 +2171,7 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
             )
             
             log.info('[SUBSYSTEM TEST] d+cm+dm+lam NO REACTION PASSED')
-            
-            log.info('[SUBSYSTEM TEST] d+cm+dm+lam DIRECT TRACTION START')
+            #log.info('[SUBSYSTEM TEST] d+cm+dm+lam DIRECT TRACTION START')
 
             fluid_state['solid_mesh_traction_test_system'].solve(
                 constrain={'d': cons['d'], 'dm': cons['dm']},
