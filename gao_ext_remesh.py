@@ -36,6 +36,7 @@ def particle_shape_from_boundary(xb_m):
     if B_particle_m > L_particle_m:
         L_particle_m, B_particle_m = B_particle_m, L_particle_m
         orientation_rad += numpy.pi / 2
+        orientation_rad = (orientation_rad + numpy.pi/2) % numpy.pi - numpy.pi/2
 
     deformation_index = (
         (L_particle_m - B_particle_m) / (L_particle_m + B_particle_m)
@@ -1542,6 +1543,11 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
 
         fluid_traction_field = ns_f.traction,
         solid_traction_field = new_ns.tsolid,
+        reaction_Tdu           = Tdu.copy(),
+        reaction_i_u_gamma     = i_u_gamma.copy(),
+        reaction_i_d_gamma     = i_d_gamma.copy(),
+        reaction_res_fluid_mom = res_fluid_mom,
+        reaction_res_solid_lamf = res_solid_lamf,
 
     )
     return (
@@ -2100,8 +2106,15 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
     # Track whether we have remeshed (changes which Newmark keys exist)
     has_remeshed = False
 
-    particle_csv = Path('D_remesh_06.csv')
-    particle_csv.write_text('time,step,L_particle,B_particle,deformation_index\n')
+    particle_csv = Path('gao_validation.csv')
+    particle_csv.write_text('time_s,time_nd,step,L_particle,B_particle,deformation_index,omega,theta_rad,theta_over_pi\n')
+    epsdot_s = float((fluid.velocity / (2 * domain.cylinder_radius)) / '1/s')
+
+    xb_initial = function.eval(x_bbz, arguments=args) / 'm'
+    L0, B0, D0, omega0, theta0 = particle_shape_from_boundary(xb_initial)
+    
+    with particle_csv.open('a') as f:
+        f.write(f'{0.0:.12e},{0.0:.12e},{0},{L0:.12e},{B0:.12e},{D0:.12e},{omega0:.12e},{theta0:.12e},{theta0/numpy.pi:.12e}\n')
 
     for istep, t in enumerate(log.iter.fraction('timestep', dynamic.times) if dynamic else [Time.wrap(float('inf'))], start=1):
         if has_remeshed and 'dm' in args:
@@ -2151,36 +2164,7 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
 
         # ------------------------------------------------------------
         # Solve nonlinear system
-        # ------------------------------------------------------------
-        if has_remeshed and istep == fluid_state['remesh_istep'] + 1:
-            log.info('[SUBSYSTEM TEST] dm+lam START')
-
-            mesh_test_solution = fluid_state['mesh_test_system'].solve(
-                constrain={'dm': cons['dm']},
-                arguments=dict(args),
-                tol=1e-9,
-            )
-
-            log.info('[SUBSYSTEM TEST] dm+lam PASSED')
-            log.info('[SUBSYSTEM TEST] d+cm+dm+lam NO REACTION START')
-
-            fluid_state['solid_mesh_test_system'].solve(
-                constrain={'d': cons['d'], 'dm': cons['dm']},
-                arguments=dict(args),
-                tol=1e-9,
-            )
-            
-            log.info('[SUBSYSTEM TEST] d+cm+dm+lam NO REACTION PASSED')
-            #log.info('[SUBSYSTEM TEST] d+cm+dm+lam DIRECT TRACTION START')
-
-            fluid_state['solid_mesh_traction_test_system'].solve(
-                constrain={'d': cons['d'], 'dm': cons['dm']},
-                arguments=dict(args),
-                tol=1e-9,
-            )
-            
-            log.info('[SUBSYSTEM TEST] d+cm+dm+lam DIRECT TRACTION PASSED')
-        
+        # ------------------------------------------------------------        
         try:
             args = system.solve(constrain=cons, arguments=args, tol=1e-9)  
             if not has_remeshed and istep <= 10:
@@ -2215,6 +2199,30 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
                 log.info(f'particle/interface displacement max: {dcyl_mag.max():.6e} m')
 
             raise
+        if has_remeshed and istep == fluid_state['remesh_istep'] + 1:
+
+            Ru = numpy.asarray(function.eval(fluid_state['reaction_res_fluid_mom'].derivative('utest'), arguments=args), dtype=float).reshape(-1)
+        
+            Rlamf = numpy.asarray(function.eval(fluid_state['reaction_res_solid_lamf'].derivative('dtest'), arguments=args), dtype=float).reshape(-1)
+        
+            i_u = fluid_state['reaction_i_u_gamma']
+            i_d = fluid_state['reaction_i_d_gamma']
+            Tdu = fluid_state['reaction_Tdu']
+        
+            Rreaction = Tdu.T @ Ru[i_u]
+            Rlamf_gamma = Rlamf[i_d]
+        
+            diff = Rlamf_gamma - Rreaction
+            summ = Rlamf_gamma + Rreaction
+        
+            log.info(
+                f'[LAMF-REACTION] '
+                f'||reaction||={numpy.linalg.norm(Rreaction):.6e}, '
+                f'||lamf||={numpy.linalg.norm(Rlamf_gamma):.6e}, '
+                f'||lamf-reaction||={numpy.linalg.norm(diff):.6e}, '
+                f'||lamf+reaction||={numpy.linalg.norm(summ):.6e}, '
+                f'rel={numpy.linalg.norm(diff)/max(numpy.linalg.norm(Rreaction),1e-30):.6e}'
+            )
 
         if fluid:
             Jf_check = function.eval(Jfluid_bz, arguments=args)
@@ -2397,9 +2405,16 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
 
         xb_current = function.eval(x_bbz, arguments=args) / 'm'
         L_particle_m, B_particle_m, deformation_index, aspect_ratio, orientation_rad = particle_shape_from_boundary(xb_current)
-
+        
+        time_nd = epsdot_s * current_t_s
+        theta_over_pi = orientation_rad / numpy.pi
+        
         with particle_csv.open('a') as f:
-            f.write(f'{current_t_s:.12e},{istep},{L_particle_m:.12e},{B_particle_m:.12e},{deformation_index:.12e}\n')
+            f.write(
+                f'{current_t_s:.12e},{time_nd:.12e},{istep},'
+                f'{L_particle_m:.12e},{B_particle_m:.12e},{deformation_index:.12e},'
+                f'{aspect_ratio:.12e},{orientation_rad:.12e},{theta_over_pi:.12e}\n'
+            )
         x, xb = function.eval([x_bz, x_bbz], arguments=args)
         # ------------------------------------------------------------
         # Save deformed mesh every 100 timesteps
