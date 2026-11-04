@@ -628,11 +628,11 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
         f'[INTERFACE TRACE BASIS] '
         f'scalar P2 trace dofs={len(i_dm_gamma_scalar)}'
     )
+    res_d_traction = zipped_traction.integral(_dot2(new_ns.dtest, ns_f.traction) * new_ns.dS)
     # Fluid-solid interface multiplier: enforces urel = 0 and carries the discrete reaction.
     fluid_stress_scale = fluid.viscosity * fluid.velocity / domain.cylinder_radius
     
     lamf_basis = dm_basis[i_dm_gamma_scalar]
-    
     new_ns.lamf = (function.field('lamf', lamf_basis, shape=(2,)) * fluid_stress_scale)
     
     new_ns.lamftest = (function.replace_arguments(new_ns.lamf, 'lamf:lamftest') / (fluid_stress_scale * fluid.velocity * domain.cylinder_radius))
