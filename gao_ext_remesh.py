@@ -2284,7 +2284,13 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
 
             log.info(f'[INTERFACE STEP] ||dm-(ds-ds_r)|| max={dd.max():.6e} m, /R={dd.max()/R_m:.6e}')
             log.info(f'[INTERFACE STEP] ||vm-vs|| max={dv.max():.6e} m/s, rel={dv.max()/vs_ref:.6e}')
-            log.info(f'[INTERFACE STEP] ||am-as|| max={da.max():.6e} m/s2, rel={da.max()/as_ref:.6e}')           
+            log.info(f'[INTERFACE STEP] ||am-as|| max={da.max():.6e} m/s2, rel={da.max()/as_ref:.6e}')
+
+            urel_gamma = function.eval(fluid_state['dm_zipped_interface'].bind(ns.urel), arguments=args)
+            urel_gamma = numpy.asarray(urel_gamma / 'm/s', dtype=float)
+            urel_err = numpy.linalg.norm(urel_gamma, axis=-1)
+            
+            log.info(f'[INTERFACE STEP] ||urel|| max={urel_err.max():.6e} m/s')
 
 
         # ------------------------------------------------------------
