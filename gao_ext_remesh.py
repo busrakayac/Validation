@@ -757,34 +757,34 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     # 8. Build new Newton system
     # ------------------------------------------------------------------
     new_system = System(new_res, trial=['d', 'cm', 'dm', 'u', 'p', 'lam', 'lamf'], test=['dtest', 'cmtest', 'dmtest', 'utest', 'ptest', 'lamtest', 'lamftest'])
-    mesh_test_system = System(
-        res_mesh_bulk + res_mesh_lam + res_mesh_constraint,
-        trial=['dm', 'lam'],
-        test=['dmtest', 'lamtest'],
-    )
-    res_cm = topo['solid'].integral('cmtest_i x_i dVref' @ new_ns, degree=4) / domain.cylinder_radius**3
+    # mesh_test_system = System(
+    #     res_mesh_bulk + res_mesh_lam + res_mesh_constraint,
+    #     trial=['dm', 'lam'],
+    #     test=['dmtest', 'lamtest'],
+    # )
+    # res_cm = topo['solid'].integral('cmtest_i x_i dVref' @ new_ns, degree=4) / domain.cylinder_radius**3
 
-    solid_mesh_test_system = System(
-        res_d_internal + res_d_inertia + res_d_cmforce + res_cm
-        + res_mesh_bulk + res_mesh_lam + res_mesh_constraint,
-        trial=['d', 'cm', 'dm', 'lam'],
-        test=['dtest', 'cmtest', 'dmtest', 'lamtest'],
-    )
+    # solid_mesh_test_system = System(
+    #     res_d_internal + res_d_inertia + res_d_cmforce + res_cm
+    #     + res_mesh_bulk + res_mesh_lam + res_mesh_constraint,
+    #     trial=['d', 'cm', 'dm', 'lam'],
+    #     test=['dtest', 'cmtest', 'dmtest', 'lamtest'],
+    # )
     
-    solid_mesh_reaction_test_system = System(
-        res_d_internal + res_d_inertia + res_d_cmforce + res_cm
-        + res_d_fluid_reaction
-        + res_mesh_bulk + res_mesh_lam + res_mesh_constraint,
-        trial=['d', 'cm', 'dm', 'lam'],
-        test=['dtest', 'cmtest', 'dmtest', 'lamtest'],
-    )
-    solid_mesh_traction_test_system = System(
-        res_d_internal + res_d_inertia + res_d_cmforce + res_cm
-        + res_d_traction
-        + res_mesh_bulk + res_mesh_lam + res_mesh_constraint,
-        trial=['d', 'cm', 'dm', 'lam'],
-        test=['dtest', 'cmtest', 'dmtest', 'lamtest'],
-    )
+    # solid_mesh_reaction_test_system = System(
+    #     res_d_internal + res_d_inertia + res_d_cmforce + res_cm
+    #     + res_d_fluid_reaction
+    #     + res_mesh_bulk + res_mesh_lam + res_mesh_constraint,
+    #     trial=['d', 'cm', 'dm', 'lam'],
+    #     test=['dtest', 'cmtest', 'dmtest', 'lamtest'],
+    # )
+    # solid_mesh_traction_test_system = System(
+    #     res_d_internal + res_d_inertia + res_d_cmforce + res_cm
+    #     + res_d_traction
+    #     + res_mesh_bulk + res_mesh_lam + res_mesh_constraint,
+    #     trial=['d', 'cm', 'dm', 'lam'],
+    #     test=['dtest', 'cmtest', 'dmtest', 'lamtest'],
+    # )
     # ------------------------------------------------------------------
     # 9. Transfer solution to new mesh (physical coordinates, physical velocity, full Newmark history for both d_m and u_rel)
     # ------------------------------------------------------------------
@@ -1535,11 +1535,11 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
         # Fixed outer-boundary constraint and interface data
         dm_outer_cons       = dm_outer_cons,
         solid_cyl_gauss     = solid_cyl_gauss,
-        mesh_test_system = mesh_test_system,
+        # mesh_test_system = mesh_test_system,
 
-        solid_mesh_test_system = solid_mesh_test_system,
-        solid_mesh_reaction_test_system = solid_mesh_reaction_test_system,
-        solid_mesh_traction_test_system = solid_mesh_traction_test_system,
+        # solid_mesh_test_system = solid_mesh_test_system,
+        # solid_mesh_reaction_test_system = solid_mesh_reaction_test_system,
+        # solid_mesh_traction_test_system = solid_mesh_traction_test_system,
 
         fluid_traction_field = ns_f.traction,
         solid_traction_field = new_ns.tsolid,
@@ -1747,7 +1747,7 @@ class Fluid:
 class Dynamic:
     '''Parameters relating to time dependence.'''
 
-    timestep: Time = Time('0.1ms') # simulation time step size
+    timestep: Time = Time('0.2ms') # simulation time step size
     endtime: Time = Time('13s') # total duration of the simulation
     init: Time = Time('.1s') # duration of the ramp-up phase
     window: Time = Time('1s') # sliding window length for time series plots
@@ -2225,13 +2225,13 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
             )
 
         if fluid:
-            Jf_check = function.eval(Jfluid_bz, arguments=args)
+            Jf = function.eval(Jfluid_bz, arguments=args)
 
             if not numpy.all(numpy.isfinite(Jf_check)) or Jf_check.min() <= 0:
                 raise RuntimeError(f'Invalid fluid state after Newton: Jf_min={Jf_check.min():.6e}')
 
         if solid:
-            Js_check = function.eval(Jsolid_bz, arguments=args)
+            Js = function.eval(Jsolid_bz, arguments=args)
 
             if not numpy.all(numpy.isfinite(Js_check)) or Js_check.min() <= 0:
                 raise RuntimeError(f'Invalid solid state after Newton: Js_min={Js_check.min():.6e}')
@@ -2248,18 +2248,16 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
         # ------------------------------------------------------------
 
         if fluid:
-            Jf = function.eval(Jfluid_bz, arguments=args)
             log.info(f'J fluid min/max: {Jf.min():.6e}, {Jf.max():.6e}')
 
         if solid:
-            Js = function.eval(Jsolid_bz, arguments=args)
             dcyl = function.eval(d_cyl_bz, arguments=args)
             dcyl_mag = numpy.linalg.norm(dcyl / 'm', axis=1)
 
             log.info(f'J solid min/max: {Js.min():.6e}, {Js.max():.6e}')
             log.info(f'particle/interface displacement max: {dcyl_mag.max():.6e} m')
 
-        if has_remeshed:
+        if has_remeshed and istep % 100 == 0:
             zipped = fluid_state['dm_zipped_interface']
 
             dm_g, ds_g, vm_g, vs_g, am_g, as_g = function.eval(
@@ -2415,11 +2413,12 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
                 f'{L_particle_m:.12e},{B_particle_m:.12e},{deformation_index:.12e},'
                 f'{aspect_ratio:.12e},{orientation_rad:.12e},{theta_over_pi:.12e}\n'
             )
-        x, xb = function.eval([x_bz, x_bbz], arguments=args)
+        
         # ------------------------------------------------------------
         # Save deformed mesh every 100 timesteps
         # ------------------------------------------------------------
-        if istep % 100 == 0:
+        if istep % 1000 == 0:
+            x, xb = function.eval([x_bz, x_bbz], arguments=args)
 
             if solid:
                 xs = function.eval(xsolid_bz, arguments=args)
@@ -2447,7 +2446,7 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
         # ------------------------------------------------------------
         # Save velocity plot every 100 timesteps
         # ------------------------------------------------------------
-        if fluid and istep % 100 == 0:
+        if fluid and istep % 1000 == 0:
 
             u = function.eval(u_bz, arguments=args)
             velmag = numpy.linalg.norm(u / 'm/s', axis=1)
