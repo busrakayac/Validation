@@ -2227,14 +2227,14 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
         if fluid:
             Jf = function.eval(Jfluid_bz, arguments=args)
 
-            if not numpy.all(numpy.isfinite(Jf_check)) or Jf_check.min() <= 0:
-                raise RuntimeError(f'Invalid fluid state after Newton: Jf_min={Jf_check.min():.6e}')
+            if not numpy.all(numpy.isfinite(Jf)) or Jf.min() <= 0:
+                raise RuntimeError(f'Invalid fluid state after Newton: Jf_min={Jf.min():.6e}')
 
         if solid:
             Js = function.eval(Jsolid_bz, arguments=args)
 
-            if not numpy.all(numpy.isfinite(Js_check)) or Js_check.min() <= 0:
-                raise RuntimeError(f'Invalid solid state after Newton: Js_min={Js_check.min():.6e}')
+            if not numpy.all(numpy.isfinite(Js)) or Js.min() <= 0:
+                raise RuntimeError(f'Invalid solid state after Newton: Js_min={Js.min():.6e}')
 
         # ------------------------------------------------------------
         # Time-step size used for cumulative diagnostics
