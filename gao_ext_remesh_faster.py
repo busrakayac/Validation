@@ -1747,7 +1747,7 @@ class Fluid:
 class Dynamic:
     '''Parameters relating to time dependence.'''
 
-    timestep: Time = Time('0.2ms') # simulation time step size
+    timestep: Time = Time('0.1ms') # simulation time step size
     endtime: Time = Time('13s') # total duration of the simulation
     init: Time = Time('.1s') # duration of the ramp-up phase
     window: Time = Time('1s') # sliding window length for time series plots
@@ -2093,7 +2093,7 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
     # Trigger remeshing when the minimum Jacobian of the fluid mesh drops below this threshold (relative to a perfect element = 1).
 
     enable_remeshing = True
-    remesh_J_threshold = 0.6
+    remesh_J_threshold = 0.4
     predictor_J_safety = 0.4
 
     # Also allow a time-interval-based fallback trigger (set to None to disable).
