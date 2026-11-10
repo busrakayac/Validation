@@ -1694,7 +1694,7 @@ class Domain:
     channel_length: Length = Length('0.0006m')
     cylinder_radius: Length = Length('0.00003m')
     
-    elemsize: Length = Length('0.000005m')
+    elemsize: Length = Length('0.00001m')
     coarsening: float = 8.
 
     def generate_mesh(self):
