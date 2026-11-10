@@ -219,8 +219,17 @@ lc_particle = elemsize;
 lc_far = coarsening * elemsize;
 
 // Distance from particle interface
-Field[1] = Distance;
-Field[1].CurvesList = {11, 12, 13, 14};
+hmin = elemsize;
+hmax = coarsening * elemsize;
+Lgrow = 6.0 * a0;
+
+Field[2] = MathEval;
+Field[2].F = Sprintf(
+    "Min(%g, %g*Exp(Log(%g/%g)*F1/%g))",
+    hmax, hmin, hmax, hmin, Lgrow
+);
+
+Background Field = 2;
 
 // Gradually increase mesh size away from particle
 Field[2] = Threshold;
