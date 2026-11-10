@@ -1632,26 +1632,26 @@ def remesh_diagnostics(
     # ------------------------------------------------------------------
     # Plot 1: mesh comparison (old deformed ALE vs new clean mesh)
     # ------------------------------------------------------------------
-    with export.mplfigure(f'remesh_{remesh_count:03d}_mesh_t{current_t_s:.6f}s.jpg', dpi=200) as fig:
+    # with export.mplfigure(f'remesh_{remesh_count:03d}_mesh_t{current_t_s:.6f}s.jpg', dpi=200) as fig:
 
-        ax1 = fig.add_subplot(121, title=f'ALE mesh before remesh\nJf_min={Jf_old.min():.3f}')
-        export.triplot(ax1, old_x_m, hull=old_fluid_bezier.hull, linewidth=0.25)
-        closed = numpy.vstack([xb_solid_m, xb_solid_m[:1]])
-        ax1.plot(closed[:, 0], closed[:, 1], 'r-', linewidth=1.5, label='solid boundary')
-        ax1.set_aspect('equal')
-        ax1.set_xlim(-L_plot, L_plot)
-        ax1.set_ylim(-L_plot, L_plot)
-        ax1.legend(fontsize=6)
+    #     ax1 = fig.add_subplot(121, title=f'ALE mesh before remesh\nJf_min={Jf_old.min():.3f}')
+    #     export.triplot(ax1, old_x_m, hull=old_fluid_bezier.hull, linewidth=0.25)
+    #     closed = numpy.vstack([xb_solid_m, xb_solid_m[:1]])
+    #     ax1.plot(closed[:, 0], closed[:, 1], 'r-', linewidth=1.5, label='solid boundary')
+    #     ax1.set_aspect('equal')
+    #     ax1.set_xlim(-L_plot, L_plot)
+    #     ax1.set_ylim(-L_plot, L_plot)
+    #     ax1.legend(fontsize=6)
 
-        ax2 = fig.add_subplot(122, title=f'New fluid mesh after remesh\nJf_min={Jf_new.min():.3f}')
-        export.triplot(ax2, new_x_m, hull=new_fluid_bezier.hull, linewidth=0.25)
-        ax2.plot(closed[:, 0], closed[:, 1], 'r-', linewidth=1.5, label='solid boundary')
-        ax2.set_aspect('equal')
-        ax2.set_xlim(-L_plot, L_plot)
-        ax2.set_ylim(-L_plot, L_plot)
-        ax2.legend(fontsize=6)
+    #     ax2 = fig.add_subplot(122, title=f'New fluid mesh after remesh\nJf_min={Jf_new.min():.3f}')
+    #     export.triplot(ax2, new_x_m, hull=new_fluid_bezier.hull, linewidth=0.25)
+    #     ax2.plot(closed[:, 0], closed[:, 1], 'r-', linewidth=1.5, label='solid boundary')
+    #     ax2.set_aspect('equal')
+    #     ax2.set_xlim(-L_plot, L_plot)
+    #     ax2.set_ylim(-L_plot, L_plot)
+    #     ax2.legend(fontsize=6)
 
-        fig.suptitle(f'Remesh #{remesh_count}  t={current_t_s:.4e} s', fontsize=9)
+    #     fig.suptitle(f'Remesh #{remesh_count}  t={current_t_s:.4e} s', fontsize=9)
 
     # ------------------------------------------------------------------
     # Plot 2: velocity magnitude comparison (old vs new mesh)
@@ -1659,30 +1659,30 @@ def remesh_diagnostics(
     vmin = min(old_u_vals.min(), new_u_vals.min())
     vmax = max(old_u_vals.max(), new_u_vals.max())
 
-    with export.mplfigure(f'remesh_{remesh_count:03d}_velocity_t{current_t_s:.6f}s.jpg', dpi=200) as fig:
+    # with export.mplfigure(f'remesh_{remesh_count:03d}_velocity_t{current_t_s:.6f}s.jpg', dpi=200) as fig:
 
-        ax1 = fig.add_subplot(121, title='|u| before remesh  [m/s]')
-        im = ax1.tripcolor(
-            old_x_m[:, 0], old_x_m[:, 1], old_fluid_bezier.tri,
-            old_u_vals, shading='gouraud', vmin=vmin, vmax=vmax,
-        )
-        ax1.plot(closed[:, 0], closed[:, 1], 'w-', linewidth=1)
-        ax1.set_aspect('equal')
-        ax1.set_xlim(-L_plot, L_plot)
-        ax1.set_ylim(-L_plot, L_plot)
+    #     ax1 = fig.add_subplot(121, title='|u| before remesh  [m/s]')
+    #     im = ax1.tripcolor(
+    #         old_x_m[:, 0], old_x_m[:, 1], old_fluid_bezier.tri,
+    #         old_u_vals, shading='gouraud', vmin=vmin, vmax=vmax,
+    #     )
+    #     ax1.plot(closed[:, 0], closed[:, 1], 'w-', linewidth=1)
+    #     ax1.set_aspect('equal')
+    #     ax1.set_xlim(-L_plot, L_plot)
+    #     ax1.set_ylim(-L_plot, L_plot)
 
-        ax2 = fig.add_subplot(122, title='|u| after remesh  [m/s]')
-        im2 = ax2.tripcolor(
-            new_x_m[:, 0], new_x_m[:, 1], new_fluid_bezier.tri,
-            new_u_vals, shading='gouraud', vmin=vmin, vmax=vmax,
-        )
-        ax2.plot(closed[:, 0], closed[:, 1], 'w-', linewidth=1)
-        ax2.set_aspect('equal')
-        ax2.set_xlim(-L_plot, L_plot)
-        ax2.set_ylim(-L_plot, L_plot)
+    #     ax2 = fig.add_subplot(122, title='|u| after remesh  [m/s]')
+    #     im2 = ax2.tripcolor(
+    #         new_x_m[:, 0], new_x_m[:, 1], new_fluid_bezier.tri,
+    #         new_u_vals, shading='gouraud', vmin=vmin, vmax=vmax,
+    #     )
+    #     ax2.plot(closed[:, 0], closed[:, 1], 'w-', linewidth=1)
+    #     ax2.set_aspect('equal')
+    #     ax2.set_xlim(-L_plot, L_plot)
+    #     ax2.set_ylim(-L_plot, L_plot)
 
-        fig.colorbar(im2, ax=[ax1, ax2], orientation='horizontal', label='|u| [m/s]', shrink=0.6)
-        fig.suptitle(f'Remesh #{remesh_count}  t={current_t_s:.4e} s', fontsize=9)
+    #     fig.colorbar(im2, ax=[ax1, ax2], orientation='horizontal', label='|u| [m/s]', shrink=0.6)
+    #     fig.suptitle(f'Remesh #{remesh_count}  t={current_t_s:.4e} s', fontsize=9)
 
  
 @dataclass
@@ -2427,7 +2427,7 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
         L_particle_m, B_particle_m, deformation_index, aspect_ratio, orientation_rad = particle_shape_from_boundary(xb_current)
         
         time_nd = epsdot_s * current_t_s
-        theta_over_pi = orientation_rad / numpy.pi
+        theta_over_pi = orientation_rad 
         
         with particle_csv.open('a') as f:
             f.write(
@@ -2439,53 +2439,53 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
         # ------------------------------------------------------------
         # Save deformed mesh every 100 timesteps
         # ------------------------------------------------------------
-        if istep % 1000 == 0:
-            x, xb = function.eval([x_bz, x_bbz], arguments=args)
+        # if istep % 1000 == 0:
+        #     x, xb = function.eval([x_bz, x_bbz], arguments=args)
 
-            if solid:
-                xs = function.eval(xsolid_bz, arguments=args)
+        #     if solid:
+        #         xs = function.eval(xsolid_bz, arguments=args)
 
-            with export.mplfigure(str('mesh.jpg'), dpi=200) as fig:
-                ax = fig.add_subplot(111, title=f'Deformed mesh at t={t:.3s}', ylabel='[m]')
+        #     with export.mplfigure(str('mesh.jpg'), dpi=200) as fig:
+        #         ax = fig.add_subplot(111, title=f'Deformed mesh at t={t:.3s}', ylabel='[m]')
 
-                # Fluid mesh
-                if fluid:
-                    export.triplot(ax, x / 'm', hull=fluid_bezier.hull, linewidth=0.25)
+        #         # Fluid mesh
+        #         if fluid:
+        #             export.triplot(ax, x / 'm', hull=fluid_bezier.hull, linewidth=0.25)
 
-                # Solid/particle mesh
-                if solid:
-                    export.triplot(ax, xs / 'm', hull=solid_bezier.hull,linewidth=0.25)
+        #         # Solid/particle mesh
+        #         if solid:
+        #             export.triplot(ax, xs / 'm', hull=solid_bezier.hull,linewidth=0.25)
 
-                # Particle boundary
-                export.triplot(ax, xb / 'm', hull=bbezier.tri, linewidth=1.0, linecolor='b')
+        #         # Particle boundary
+        #         export.triplot(ax, xb / 'm', hull=bbezier.tri, linewidth=1.0, linecolor='b')
 
-                ax.set_aspect('equal')
+        #         ax.set_aspect('equal')
 
-                L = domain.channel_length / 'm'
-                ax.set_xlim(-L, L)
-                ax.set_ylim(-L, L)
+        #         L = domain.channel_length / 'm'
+        #         ax.set_xlim(-L, L)
+        #         ax.set_ylim(-L, L)
 
         # ------------------------------------------------------------
         # Save velocity plot every 100 timesteps
         # ------------------------------------------------------------
-        if fluid and istep % 1000 == 0:
+        # if fluid and istep % 1000 == 0:
 
-            u = function.eval(u_bz, arguments=args)
-            velmag = numpy.linalg.norm(u / 'm/s', axis=1)
+        #     u = function.eval(u_bz, arguments=args)
+        #     velmag = numpy.linalg.norm(u / 'm/s', axis=1)
 
-            with export.mplfigure(str('solution.jpg'), dpi=150) as fig:
-                ax = fig.add_subplot(111, ylabel='[m]', title=f'Velocity magnitude at t={t:.3s}')
-                im = ax.tripcolor(*(x / 'm').T, fluid_bezier.tri, velmag, shading='gouraud')
+        #     with export.mplfigure(str('solution.jpg'), dpi=150) as fig:
+        #         ax = fig.add_subplot(111, ylabel='[m]', title=f'Velocity magnitude at t={t:.3s}')
+        #         im = ax.tripcolor(*(x / 'm').T, fluid_bezier.tri, velmag, shading='gouraud')
 
-                fig.colorbar(im, orientation='horizontal', label='velocity [m/s]')
+        #         fig.colorbar(im, orientation='horizontal', label='velocity [m/s]')
 
-                export.triplot(ax, xb / 'm', hull=bbezier.tri, linewidth=1)
+        #         export.triplot(ax, xb / 'm', hull=bbezier.tri, linewidth=1)
 
-                ax.set_aspect('equal')
+        #         ax.set_aspect('equal')
 
-                L = domain.channel_length / 'm'
-                ax.set_xlim(-L, L)
-                ax.set_ylim(-L, L)
+        #         L = domain.channel_length / 'm'
+        #         ax.set_xlim(-L, L)
+        #         ax.set_ylim(-L, L)
 
 
 if __name__ == '__main__':
