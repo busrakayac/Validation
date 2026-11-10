@@ -1694,8 +1694,8 @@ class Domain:
     channel_length: Length = Length('0.0006m')
     cylinder_radius: Length = Length('0.00003m')
     
-    elemsize: Length = Length('0.00002m')
-    coarsening: float = 2.
+    elemsize: Length = Length('0.00001m')
+    coarsening: float = 4.
 
     def generate_mesh(self):
         'Call gmsh to generate mesh and return topo, geom tuple.'''
