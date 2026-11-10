@@ -797,17 +797,23 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     # This is exact (uses the old FE basis) and, unlike LinearNDInterpolator with fill_value=0, does not silently zero points that fall outside
     # the convex hull of the old Gauss cloud — which happens precisely near the cylinder, where accuracy matters most.
     # Independent of locate_tol_m, which the FSI-coupling block above may have loosened on retry; that must not silently affect field transfer.
-
-    transfer_tol_m = float(domain.cylinder_radius / 'm') * 1e-4
+    R_m = float(domain.cylinder_radius / 'm')
     transfer_via_locate = False
     new_graduf = None
-    try:
-        # locate must be performed in the OLD mesh's *physical* (deformed ALE) coordinates, because new_dof_x_m are physical positions.
-        # x_field is exactly that (= X_old + d_m_old); strip its SI unit and supply args so the displacement part evaluates.
-
-        old_located = old_topo_fluid.locate(x_field / Length('1m'), new_dof_x_m, tol=transfer_tol_m, arguments=args, skip_missing=False)
-        
-        (t_uf, t_vm, t_am, t_urel, t_arel, t_p, t_a0dt2, t_u0, t_a0dt_urel) = function.eval([
+    
+    for transfer_tol_m in [1e-4*R_m, 5e-4*R_m, 1e-3*R_m]:
+    
+        try:
+            old_located = old_topo_fluid.locate(
+                x_field / Length('1m'),
+                new_dof_x_m,
+                tol=transfer_tol_m,
+                arguments=args,
+                skip_missing=False,
+            )
+    
+            (t_uf, t_vm, t_am, t_urel, t_arel, t_p,
+             t_a0dt2, t_u0, t_a0dt_urel) = function.eval([
                 old_located.bind(v_field + urel_field),
                 old_located.bind(v_field),
                 old_located.bind(a_field),
@@ -816,33 +822,47 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
                 old_located.bind(p_field),
                 old_located.bind(a0dt2_expr),
                 old_located.bind(u0_expr),
-                old_located.bind(a0dt_urel_expr)], arguments=args)
-        ns_old_grad = Namespace()
-        ns_old_grad.x = x_field
-        ns_old_grad.define_for('x', gradient='∇')
-        ns_old_grad.uf = v_field + urel_field
-        
-        t_graduf = function.eval(old_located.bind('∇_j(uf_i)' @ ns_old_grad), arguments=args)
-        new_graduf = numpy.asarray(t_graduf / '1/s', dtype=float)
-
-
-        new_uf_x, new_uf_y = numpy.asarray(t_uf / 'm/s', dtype=float).T
-        new_vm_x, new_vm_y = numpy.asarray(t_vm / 'm/s', dtype=float).T
-        new_am_x, new_am_y = numpy.asarray(t_am / 'm/s2', dtype=float).T
-        new_urel_x, new_urel_y = numpy.asarray(t_urel / 'm/s', dtype=float).T
-        new_arel_x, new_arel_y = numpy.asarray(t_arel / 'm/s2', dtype=float).T
-        new_p_Pa = numpy.asarray(t_p / 'Pa', dtype=float)
-        
-        new_a0dt2_x, new_a0dt2_y = numpy.asarray(t_a0dt2 / 'm', dtype=float).T
-        new_u0_x, new_u0_y = numpy.asarray(t_u0 / 'm/s', dtype=float).T
-        new_a0dt_urel_x, new_a0dt_urel_y = numpy.asarray(t_a0dt_urel / 'm/s', dtype=float).T
-        
-        transfer_via_locate = True
-
-        log.info('[REMESH] field transfer via Topology.locate (exact FE evaluation)')
-    except Exception as ex:
-        log.info(f'[REMESH] locate-based transfer unavailable ({ex}); '
-                 f'falling back to scattered interpolation.')
+                old_located.bind(a0dt_urel_expr),
+            ], arguments=args)
+    
+            ns_old_grad = Namespace()
+            ns_old_grad.x = x_field
+            ns_old_grad.define_for('x', gradient='∇')
+            ns_old_grad.uf = v_field + urel_field
+    
+            t_graduf = function.eval(
+                old_located.bind('∇_j(uf_i)' @ ns_old_grad),
+                arguments=args,
+            )
+            new_graduf = numpy.asarray(t_graduf / '1/s', dtype=float)
+    
+            new_uf_x, new_uf_y = numpy.asarray(t_uf / 'm/s', dtype=float).T
+            new_vm_x, new_vm_y = numpy.asarray(t_vm / 'm/s', dtype=float).T
+            new_am_x, new_am_y = numpy.asarray(t_am / 'm/s2', dtype=float).T
+            new_urel_x, new_urel_y = numpy.asarray(t_urel / 'm/s', dtype=float).T
+            new_arel_x, new_arel_y = numpy.asarray(t_arel / 'm/s2', dtype=float).T
+            new_p_Pa = numpy.asarray(t_p / 'Pa', dtype=float)
+    
+            new_a0dt2_x, new_a0dt2_y = numpy.asarray(t_a0dt2 / 'm', dtype=float).T
+            new_u0_x, new_u0_y = numpy.asarray(t_u0 / 'm/s', dtype=float).T
+            new_a0dt_urel_x, new_a0dt_urel_y = numpy.asarray(
+                t_a0dt_urel / 'm/s', dtype=float
+            ).T
+    
+            transfer_via_locate = True
+    
+            log.info(
+                f'[REMESH] field transfer via Topology.locate '
+                f'(tol={transfer_tol_m:.3e} m)'
+            )
+    
+            break
+    
+        except Exception as ex:
+            log.info(
+                f'[REMESH] Topology.locate failed with '
+                f'tol={transfer_tol_m:.3e} m: {ex}'
+            )
 
     if not transfer_via_locate:
 
@@ -2093,8 +2113,9 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
     # Trigger remeshing when the minimum Jacobian of the fluid mesh drops below this threshold (relative to a perfect element = 1).
 
     enable_remeshing = True
-    remesh_J_threshold = 0.4
+    remesh_J_threshold = 0.6
     predictor_J_safety = 0.4
+    remesh_Jmax_threshold = 2.0
 
     # Also allow a time-interval-based fallback trigger (set to None to disable).
     # Set to a small value for an early forced remesh to test the procedure before the mesh actually degrades. Once validated, set back to None.
@@ -2308,10 +2329,11 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
 
             # Quality-based trigger: minimum Jacobian below threshold
             if Jf.min() < remesh_J_threshold:
-                log.info(
-                    f'Remesh triggered by mesh quality: '
-                    f'Jf_min={Jf.min():.4f} < {remesh_J_threshold}')
+                log.info(f'Remesh triggered by mesh quality: Jf_min={Jf.min():.4f} < {remesh_J_threshold}')
+                need_remesh = True
                 
+            if Jf.max() > remesh_Jmax_threshold:
+                log.info(f'Remesh triggered by mesh stretching: Jf_max={Jf.max():.4f} > {remesh_Jmax_threshold}')
                 need_remesh = True
 
             # Time-interval-based trigger (optional fallback)
