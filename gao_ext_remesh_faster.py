@@ -1694,8 +1694,8 @@ class Domain:
     channel_length: Length = Length('0.0006m')
     cylinder_radius: Length = Length('0.00003m')
     
-    elemsize: Length = Length('0.00001m')
-    coarsening: float = 4.
+    elemsize: Length = Length('0.000005m')
+    coarsening: float = 8.
 
     def generate_mesh(self):
         'Call gmsh to generate mesh and return topo, geom tuple.'''
@@ -2127,7 +2127,7 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
     # Track whether we have remeshed (changes which Newmark keys exist)
     has_remeshed = False
 
-    particle_csv = Path('mesh_medium.csv')
+    particle_csv = Path('mesh_fine.csv')
     particle_csv.write_text('time_s,time_nd,step,L_particle,B_particle,deformation_index,omega,theta_rad,theta_over_pi\n')
     epsdot_s = float((fluid.velocity / (2 * domain.cylinder_radius)) / '1/s')
 
