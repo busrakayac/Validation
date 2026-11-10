@@ -221,7 +221,7 @@ lc_far = coarsening * elemsize;
 // Distance from particle interface
 hmin = elemsize;
 hmax = coarsening * elemsize;
-Lgrow = 10.0 * a0;
+Lgrow = 4.0 * a0;
 
 Field[1] = Distance;
 Field[1].CurvesList = {11,12,13,14};
@@ -229,7 +229,7 @@ Field[1].CurvesList = {11,12,13,14};
 Field[2] = MathEval;
 Field[2].F = Sprintf(
     "Min(%g, %g*Exp(Log(%g/%g)*Max(F1-%g,0)/%g))",
-    hmax, hmin, hmax, hmin, a0, Lgrow
+    hmax, hmin, hmax, hmin, b0, Lgrow
 );
 
 Background Field = 2;
