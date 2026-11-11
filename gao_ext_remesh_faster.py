@@ -868,30 +868,28 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
 # **Important:** The solution has not yet been projected onto the new finite-element basis.
 #_____________________________________________________________________________________________________________________________________________
 
-    # 10. Reconstruct the fluid solution and Newmark histories on the new mesh
-    # The reconstruction must also satisfy three requirements:
-    #     Preserve the physical fluid solution as accurately as possible.
-    #     Maintain compatibility between the fluid mesh motion and the solid interface.
-    #     Reconstruct consistent Newmark histories so that time integration can continue without an artificial jump.
+    # 10. Reconstruct the fluid and mesh velocities on the new mesh
+        # Project the transferred physical fluid velocity onto the new P2 space.
+        # Reconstruct a mesh velocity compatible with the solid interface.
+        # Recover the relative velocity and improve its gradients and incompressibility.
 
     R_scale   = float(domain.cylinder_radius / 'm')
     u_scale   = float(fluid.velocity / 'm/s')
     p_scale_v = float(fluid.viscosity * fluid.velocity / domain.cylinder_radius / 'Pa')
 
-    #L2 projection of a vector field
-    #This is an unconstrained projection. It approximates the transferred field but does not independently impose boundary conditions or incompressibility.
+    #Unconstrained L2 projection
+    #Project a vector field known at the new quadrature points onto the new P2 finite-element space.
     def _project_vector(target_x, target_y, scale):
         ns_p = Namespace()
-        ns_p.fproj = new_topo['fluid'].field('fproj', btype='std', degree=2, shape=(2,))
-        ns_p.ftarget = new_dof_sample.asfunction(numpy.stack([target_x / scale, target_y / scale], axis=1).astype(float))
-        #minimizing f_proj - f_target
+        ns_p.fproj = new_topo['fluid'].field('fproj', btype='std', degree=2, shape=(2,)) #auxiliary vector field
+        ns_p.ftarget = new_dof_sample.asfunction(numpy.stack([target_x / scale, target_y / scale], axis=1).astype(float)) #transferred target values
         sqr = new_dof_sample.integral(((ns_p.fproj - ns_p.ftarget) ** 2).sum(-1))
         return System(sqr, trial='fproj').solve(constrain={}, arguments={})['fproj']
 
     # Constrained projection of a mesh-related field. This function is subsequently used to reconstruct mesh acceleration and acceleration-history fields.
     def _project_mesh_state(tx, ty, interface_target):
         ns_h = Namespace()
-        ns_h.h = function.replace_arguments(new_ns.dm, [('dm', 'h')])
+        ns_h.h = function.replace_arguments(new_ns.dm, [('dm', 'h')])  #auxiliary field h uses the same P2 basis as the new fluid mesh displacement dm
         ns_h.htarget = new_dof_sample.asfunction(numpy.stack([tx / R_scale, ty / R_scale], axis=1).astype(float)) * domain.cylinder_radius
 
         sqr_gamma = zipped_traction.integral(_dot2(ns_h.h - interface_target, ns_h.h - interface_target) * new_ns.dS) / domain.cylinder_radius**3
@@ -899,7 +897,7 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
         sqr_bulk = new_dof_sample.integral((((ns_h.h - ns_h.htarget) / domain.cylinder_radius)**2).sum(-1))
         return System(sqr_bulk, trial='h').solve(constrain=hcons, arguments={})['h']
 
-    # Nonlinear mesh-extension solve. It determines the interior field by solving an artificial mesh-extension equilibrium equation.
+    # Nonlinear mesh-extension problem. It determines the interior field by solving an artificial mesh-extension equilibrium equation.
     def _extend_mesh_state(interface_target):
         ns_h = Namespace()
         ns_h.h = function.replace_arguments(new_ns.dm, [('dm', 'h')])
@@ -929,53 +927,59 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     urel_new_dofs = (uf_proj_dofs - V_mesh * R_scale / (dt * u_scale)) 
     #This is not yet the final reconstructed relative velocity. A further constrained projection is performed to improve the velocity gradients and incompressibility.
 
-    # Gao's ramp is complete at the first remesh (0.201 s > 0.1 s).
+    # Restore the prescribed outer velocity boundary conditions after the initial projection.
     u_fixed = numpy.isfinite(new_ucons)
     urel_new_dofs[u_fixed] = new_ucons[u_fixed]
 
-    ns_proj = Namespace()
+    #Construct the gradient-aware and divergence-constrained velocity projection
+    ns_proj = Namespace() #separate namespace is introduced for the auxiliary velocity projection that keeps the projection fields separate from the unknowns of the main FSI system.
     ns_proj.x = new_geom / domain.cylinder_radius
     ns_proj.define_for('x', gradient='∇', normal='n', jacobians=('dV', 'dS'))
-    ns_proj.uproj = new_topo['fluid'].field('uproj', btype='std', degree=2, shape=(2,))
-    ns_proj.uprojtest = function.replace_arguments(ns_proj.uproj, 'uproj:uprojtest')
-    ns_proj.qproj = new_topo['fluid'].field('qproj', btype='std', degree=1)
+    ns_proj.uproj = new_topo['fluid'].field('uproj', btype='std', degree=2, shape=(2,)) #unknown relative fluid velocity to reconstruct.
+    ns_proj.uprojtest = function.replace_arguments(ns_proj.uproj, 'uproj:uprojtest') 
+    ns_proj.qproj = new_topo['fluid'].field('qproj', btype='std', degree=1) #auxiliary scalar lagrange multiplier, represented using P1 elements. Its purpose is to enforce the incompressibility constraint during the velocity projection.
     ns_proj.qprojtest = function.replace_arguments(ns_proj.qproj, 'qproj:qprojtest')
-    ns_proj.vm = (function.replace_arguments(new_ns.dm, [('dm', 'Vproj')]) / dynamic.timestep / fluid.velocity)
+    ns_proj.vm = (function.replace_arguments(new_ns.dm, [('dm', 'Vproj')]) / dynamic.timestep / fluid.velocity) #previously reconstructed fluid mesh velocity.
     ns_proj.uf_i = 'vm_i + uproj_i'
-    ns_proj.utarget = new_dof_sample.asfunction(numpy.stack([new_uf_x / u_scale, new_uf_y / u_scale], axis=1).astype(float))
-    ns_proj.gtarget = new_dof_sample.asfunction((new_graduf * R_scale / u_scale).astype(float))
-    
-    new_cyl_sample = new_topo['fluid'].boundary['cylinder'].sample('gauss', 4)
-    new_cyl_x_m = numpy.asarray(new_cyl_sample.eval(new_geom) / 'm', dtype=float)
-    
-    old_cyl_located = old_topo_fluid.boundary['cylinder'].locate(x_field / Length('1m'), new_cyl_x_m, tol=transfer_tol_m, arguments=args, skip_missing=False)
-    
+    ns_proj.utarget = new_dof_sample.asfunction(numpy.stack([new_uf_x / u_scale, new_uf_y / u_scale], axis=1).astype(float)) #transferred physical fluid velocity.
+    ns_proj.gtarget = new_dof_sample.asfunction((new_graduf * R_scale / u_scale).astype(float)) #transferred physical fluid velocity gradient.
+
+    #Retrieve the old physical velocity gradient at the new particle interface
+    new_cyl_sample = new_topo['fluid'].boundary['cylinder'].sample('gauss', 4) # constructs fourth-order Gauss quadrature points on the particle boundary of the new fluid mesh.
+    new_cyl_x_m = numpy.asarray(new_cyl_sample.eval(new_geom) / 'm', dtype=float) #their physical coordinates in meters
+
+    #This operation evaluates the old solution at the new interface locations.
+    old_cyl_located = old_topo_fluid.boundary['cylinder'].locate(x_field / Length('1m'), new_cyl_x_m, tol=transfer_tol_m, arguments=args, skip_missing=False) # searches for the new particle-boundary quadrature points on the old fluid boundary.
+
+    #Define the old physical fluid velocity
     ns_old_cyl = Namespace()
     ns_old_cyl.x = x_field
     ns_old_cyl.define_for('x', gradient='∇')
     ns_old_cyl.uf = v_field + urel_field
+
+    #Evaluate the old velocity gradient at the interface
+    old_graduf_cyl = numpy.asarray(function.eval(old_cyl_located.bind('∇_j(uf_i)' @ ns_old_cyl), arguments=args) / '1/s', dtype=float) 
     
-    old_graduf_cyl = numpy.asarray(function.eval(old_cyl_located.bind('∇_j(uf_i)' @ ns_old_cyl), arguments=args) / '1/s', dtype=float)
-    
-    ns_proj.gtargetcyl = new_cyl_sample.asfunction((old_graduf_cyl * R_scale / u_scale).astype(float))
-    ns_proj.wH1 = 0.5**2
-    ns_proj.wGamma = 0.1
-    
+    ns_proj.gtargetcyl = new_cyl_sample.asfunction((old_graduf_cyl * R_scale / u_scale).astype(float)) #contains the components of the velocity gradient tensor at each sampled interface point.
+    ns_proj.wH1 = 0.5**2 #Bulk gradient weight, controls the importance of preserving the symmetric velocity gradient throughout the fluid domain.
+    ns_proj.wGamma = 0.1 #Interface gradient weight, controls the importance of preserving the traction-related symmetric velocity gradient at the particle interface.
+    #now the code has prepared all quantities required to assemble the gradient-aware, divergence-constrained projection residual:
+
+    #Assemble the constrained velocity projection: physical velocity matching, symmetric velocity gradient matching, interface viscous traction preservation, incomp. constraint 
     res_proj = new_dof_sample.integral((
         'uprojtest_i (uf_i - utarget_i) '
         '+ 0.25 wH1 '
         '(∇_j(uprojtest_i) + ∇_i(uprojtest_j)) '
         '((∇_j(uf_i) + ∇_i(uf_j)) '
         '- (gtarget_ij + gtarget_ji))') @ ns_proj)
-    
     res_proj += ns_proj.wGamma * new_cyl_sample.integral(
         '((∇_j(uprojtest_i) + ∇_i(uprojtest_j)) n_j) '
         '(((∇_k(uf_i) + ∇_i(uf_k)) n_k) '
         '- ((gtargetcyl_ik + gtargetcyl_ki) n_k))' @ ns_proj)
-    
     res_proj += new_topo['fluid'].integral('qproj ∇_i(uprojtest_i) dV' @ ns_proj, degree=4)
     res_proj += new_topo['fluid'].integral('qprojtest ∇_i(uf_i) dV' @ ns_proj, degree=4)
-    
+
+    #Apply constraints and solve the projection
     uproj_cons = numpy.full_like(new_ucons, numpy.nan)
     uproj_cons[u_fixed] = urel_new_dofs[u_fixed]
     
@@ -994,8 +998,14 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
             'qproj': numpy.zeros(
                 function.arguments_for(res_proj)['qproj'].shape)}, tol=1e-12)
     
-    urel_proj_dofs = proj_solution['uproj']
+    urel_proj_dofs = proj_solution['uproj'] #THIS IS THE FINAL CORRECTED RELATIVE VELOCITY 
+#_____________________________________________________________________________________________________________________________________________
 
+    # 11. Reconstruct the Newmark histories and fluid pressure
+        # Rebuild the relative-velocity and mesh-displacement Newmark histories.
+        # Check compatibility with the persistent solid history at the interface.
+        # Project the pressure onto the new P1 space and restore its reference value.
+        
     a0dt_new = _project_vector(new_a0dt_urel_x, new_a0dt_urel_y, u_scale)
     A_rel = _project_vector(new_arel_x * dt, new_arel_y * dt, u_scale)
 
@@ -1123,26 +1133,11 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
         [
             fluid_traction_located.bind(ns_f.tpres),
             fluid_traction_located.bind(ns_f.tvisc),
-            fluid_traction_located.bind(ns_f.traction),
-        ],
-        arguments=new_args,
-    )
+            fluid_traction_located.bind(ns_f.traction)], arguments=new_args)
     
-    _traction_error(
-        'pressure',
-        old_pres,
-        numpy.asarray(tnew_pres / 'Pa', dtype=float),
-    )
-    _traction_error(
-        'viscous',
-        old_visc,
-        numpy.asarray(tnew_visc / 'Pa', dtype=float),
-    )
-    _traction_error(
-        'total',
-        old_tot,
-        numpy.asarray(tnew_tot / 'Pa', dtype=float),
-    )
+    _traction_error('pressure', old_pres, numpy.asarray(tnew_pres / 'Pa', dtype=float))
+    _traction_error('viscous', old_visc, numpy.asarray(tnew_visc / 'Pa', dtype=float))
+    _traction_error('total', old_tot, numpy.asarray(tnew_tot / 'Pa', dtype=float))
     
     # Raw versus projected fluid restart
     projected_args = dict(new_args)
@@ -1155,29 +1150,14 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     free_u = ~numpy.isfinite(new_cons['u']).reshape(-1)
     free_p = ~numpy.isfinite(new_cons['p']).reshape(-1)
     
-    ru_transfer = numpy.asarray(
-        function.eval(ru_expr, arguments=new_args)
-    ).reshape(-1)[free_u]
+    ru_transfer = numpy.asarray(function.eval(ru_expr, arguments=new_args)).reshape(-1)[free_u]
+    rp_transfer = numpy.asarray(function.eval(rp_expr, arguments=new_args)).reshape(-1)[free_p]
+    ru_projected = numpy.asarray(function.eval(ru_expr, arguments=projected_args)).reshape(-1)[free_u]
+    rp_projected = numpy.asarray(function.eval(rp_expr, arguments=projected_args)).reshape(-1)[free_p]
     
-    rp_transfer = numpy.asarray(
-        function.eval(rp_expr, arguments=new_args)
-    ).reshape(-1)[free_p]
+    du_proj_g = function.eval(new_dof_sample.bind(new_ns.urel), arguments={'u': urel_proj_dofs - urel_new_dofs})
     
-    ru_projected = numpy.asarray(
-        function.eval(ru_expr, arguments=projected_args)
-    ).reshape(-1)[free_u]
-    
-    rp_projected = numpy.asarray(
-        function.eval(rp_expr, arguments=projected_args)
-    ).reshape(-1)[free_p]
-    
-    du_proj_g = function.eval(
-        new_dof_sample.bind(new_ns.urel),
-        arguments={'u': urel_proj_dofs - urel_new_dofs},
-    )
-    
-    du_proj = numpy.linalg.norm(
-        numpy.asarray(du_proj_g / 'm/s'), axis=-1)
+    du_proj = numpy.linalg.norm(numpy.asarray(du_proj_g / 'm/s'), axis=-1)
     
     log.info(
         f'[PROJECTED RESTART] '
@@ -1193,24 +1173,16 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
         res_fluid_mom + res_fluid_inc,
         trial=['u', 'p'],
         test=['utest', 'ptest']).solve(
-        constrain={
-            'u': new_ucons,
-            'p': new_cons['p'],
-        },
-        arguments=projected_args,
-        tol=1e-12)
+        constrain={'u': new_ucons, 'p': new_cons['p']}, arguments=projected_args, tol=1e-12)
     
     up_corrected_args = dict(projected_args)
     up_corrected_args['u'] = up_corr_solution['u']
     up_corrected_args['p'] = up_corr_solution['p']
     
     ru_up = numpy.asarray(function.eval(ru_expr, arguments=up_corrected_args)).reshape(-1)[free_u]
-    
     rp_up = numpy.asarray(function.eval(rp_expr, arguments=up_corrected_args)).reshape(-1)[free_p]
     
-    du_up_g = function.eval(
-        new_dof_sample.bind(new_ns.urel),
-        arguments={'u': up_corr_solution['u'] - urel_proj_dofs})
+    du_up_g = function.eval(dof_sample.bind(new_ns.urel), arguments={'u': up_corr_solution['u'] - urel_proj_dofs})
     du_up = numpy.linalg.norm(numpy.asarray(du_up_g / 'm/s'), axis=-1)
     dp_up_g = function.eval(new_dof_sample.bind(new_ns.p), arguments={'p': up_corr_solution['p'] - projected_args['p']})
     dp_up = numpy.abs(numpy.asarray(dp_up_g / 'Pa'))
@@ -1266,31 +1238,10 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
         arguments=new_args,
     )
     
-    _traction_error(
-        'pressure POST-PROJ',
-        old_pres,
-        numpy.asarray(tproj_pres / 'Pa', dtype=float),
-    )
-    _traction_error(
-        'viscous POST-PROJ',
-        old_visc,
-        numpy.asarray(tproj_visc / 'Pa', dtype=float),
-    )
-    _traction_error(
-        'total POST-PROJ',
-        old_tot,
-        numpy.asarray(tproj_tot / 'Pa', dtype=float),
-    )
+    _traction_error('pressure POST-PROJ', old_pres, numpy.asarray(tproj_pres / 'Pa', dtype=float))
+    _traction_error('viscous POST-PROJ', old_visc, numpy.asarray(tproj_visc / 'Pa', dtype=float))
+    _traction_error('total POST-PROJ', old_tot, numpy.asarray(tproj_tot / 'Pa', dtype=float))
 
-    # ------------------------------------------------------------------
-    # CHECK: is physical fluid velocity preserved by remeshing?
-    #
-    # Target:
-    #     u_f,target = projection of old physical velocity onto new mesh
-    #
-    # Actual:
-    #     u_f,new = v_m,new + u_rel,new
-    # ------------------------------------------------------------------
 
     uf_target_field = function.replace_arguments(new_ns.urel, [('u', 'ufcheck')])
     uf_target_g, uf_new_g = function.eval([new_dof_sample.bind(uf_target_field), new_dof_sample.bind(new_ns.u)], arguments=dict(new_args, ufcheck=uf_proj_dofs))
@@ -2165,13 +2116,8 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
                 axis=-1)
 
             R_m = float(domain.cylinder_radius / 'm')
-            vs_ref = max(
-                numpy.linalg.norm(numpy.asarray(vs_g / 'm/s'), axis=-1).max(),
-                1e-30)
-
-            as_ref = max(
-                numpy.linalg.norm(numpy.asarray(as_g / 'm/s2'), axis=-1).max(),
-                1e-30)
+            vs_ref = max(numpy.linalg.norm(numpy.asarray(vs_g / 'm/s'), axis=-1).max(), 1e-30)
+            as_ref = max(numpy.linalg.norm(numpy.asarray(as_g / 'm/s2'), axis=-1).max(), 1e-30)
 
             log.info(f'[INTERFACE STEP] ||dm-(ds-ds_r)|| max={dd.max():.6e} m, /R={dd.max()/R_m:.6e}')
             log.info(f'[INTERFACE STEP] ||vm-vs|| max={dv.max():.6e} m/s, rel={dv.max()/vs_ref:.6e}')
@@ -2202,8 +2148,7 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
 
             # Time-interval-based trigger (optional fallback)
             if remesh_interval_s and current_t_s >= next_remesh_time_s - 0.5 * dt_s:
-                log.info(
-                    f'Remesh triggered by time interval at t={current_t_s:.6f} s')
+                log.info(f'Remesh triggered by time interval at t={current_t_s:.6f} s')
                 
                 need_remesh = True
 
