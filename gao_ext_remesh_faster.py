@@ -13,6 +13,9 @@ from scipy.interpolate import LinearNDInterpolator
 import subprocess
 import meshio
 
+#Calculates the particle's deformation (omega) and orientation(theta) from its current boundary coordinates.
+#This method uses principal component analysis (PCA) to estimate the particle axes.
+# It does not fit an ellipse or calculate the exact maximum and minimum diameters. Its results therefore depend on the distribution of sampled boundary points.
 def particle_shape_from_boundary(xb_m):
     pts = numpy.asarray(xb_m, dtype=float)
     pts = pts[numpy.isfinite(pts).all(axis=1)]
@@ -46,32 +49,32 @@ def particle_shape_from_boundary(xb_m):
 
     return L_particle_m, B_particle_m, deformation_index, aspect_ratio, orientation_rad
 
+#Vector dot product: a.b = a1b1 + a2b2.
+#The function explicitly computes the scalar product while preserving dimensional consistency.
 def _dot2(a, b):
     """Contract two length-2 vectors.
     nutils.SI.Quantity does not implement .sum() or numpy.einsum, so an explicit component sum is the only way to contract dimensional arrays."""
     return a[0] * b[0] + a[1] * b[1]
 
 
+#Eliminates extremely small numerical errors in geometric coordinates before generating a Gmsh mesh.
+#The function replaces sufficiently small coordinates with exact zeros to improve geometric robustness.
 def _snap_small(v, scale, rel=1e-12):
     """Snap |v| below rel*scale to exactly 0.
     Boundary coordinates that should be exactly zero often carry floating-point residues (e.g. 3.7e-21). Written out at %.16e these become literals that some Gmsh kernels treat as degenerate."""
     return 0.0 if abs(v) < rel * scale else v
 
 
+#Generates a new Gmsh geometry file (.geo) for the fluid domain only, using the current deformed particle boundary and writes the mesh generation instructions.
+#The current particle boundary is represented using quadratic Bézier curves: B(s)=(1-s)^2 P_0 + 2(1-s)s P_c +s^2 P_1
+#It preserves the quadratic representation of the deformed particle boundary.
 def write_fluid_remesh_geo(boundary_xy_m, domain, filename, bezier_edges=None):
-    """Write a fluid-only Gmsh .geo around the current deformed particle.
-
-    The outer cross-slot geometry is identical to the original.  
-    The particle boundary is described by the *current spatial* coordinates ``boundary_xy_m`` so that the new reference configuration of the fluid mesh coincides with the current deformed state.  
-    After loading this mesh the fluid displacement field ``d`` must therefore be reset to zero (see ``remesh_fluid``)."""
-
     boundary_xy_m = numpy.asarray(boundary_xy_m, dtype=float)
 
     L = float(domain.channel_length / 'm')
     W = float(domain.channel_length / 'm')
     R = float(domain.cylinder_radius / 'm')
 
-    # In write_fluid_remesh_geo(), replace W and the current mesh sizes:
     h_particle = float(domain.elemsize / 'm')
     h_far = h_particle * domain.coarsening
     Lambda0 = 0.8
@@ -135,6 +138,7 @@ def write_fluid_remesh_geo(boundary_xy_m, domain, filename, bezier_edges=None):
         f.write(f'\nCurve Loop(500) = {{{line_string}}};\n')
         f.write('Plane Surface(400) = {100,500};\n\n')
         f.write(f'Transfinite Curve {{{line_string}}} = 2;\n')
+        
         # Physical groups — same names as the original mesh
         f.write('Physical Surface("fluid") = {400};\n')
         f.write(f'Physical Line("cylinder") = {{{line_string}}};\n')
@@ -166,44 +170,42 @@ def write_fluid_remesh_geo(boundary_xy_m, domain, filename, bezier_edges=None):
 
 
 def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, args, topo, fluid_state, remesh_index):
-    """Remesh the fluid domain using the ALE/FSI remeshing architecture.
-
-    Architecture:
-    - d_s : solid displacement on topo['solid'] (ns.d); the solid topology and material reference configuration are preserved across fluid remeshing.
-    - d_m : fluid mesh displacement on new_topo['fluid'] (ns.dm); the fresh fluid mesh becomes the new ALE reference configuration, so d_m = 0 at the remesh instant.
-    - The mesh Newmark state is reconstructed on the fresh mesh so that the reset displacement is consistent with the transferred current mesh velocity and acceleration and their temporal history.
-    - The physical fluid velocity is reconstructed as u_f = v_m + u_rel.
-    - Pressure and fluid velocity-related fields are transferred from the old fluid mesh to the fresh fluid mesh at the same current physical positions.
-    - Gradients and fluid stresses are evaluated with respect to the current ALE geometry x_m = X_f^new + d_m.
-    - FSI traction coupling uses topology.locate + sample.zip to couple the persistent solid test functions to the fresh fluid stress field, since the solid and remeshed fluid no longer share a finite-element topology.
-    - At the remesh instant, the reconstructed mesh state is synchronized with the solid interface so that v_m = v_s and a_m = a_s as transfer-consistency conditions.
-    - fluid_state stores the current fluid topology and fields generically, so subsequent remeshes sample the latest fluid mesh and solution rather than the original mesh."""
-
     log.info(f'=== REMESHING FLUID at t={current_t_s:.6f} s ===')
 
-    # ------------------------------------------------------------------
-    # 1. Sample the OLD fluid solution generically via fluid_state
-    # ------------------------------------------------------------------
-    old_topo_fluid = fluid_state['topo_fluid']
-    x_field        = fluid_state['x_field']
-    v_field        = fluid_state['v_field']
-    a_field        = fluid_state['a_field']
-    urel_field     = fluid_state['urel_field']
-    arel_field     = fluid_state['arel_field']
-    p_field        = fluid_state['p_field']
-    d_field        = fluid_state['d_field']
-    d_name         = fluid_state['d_name']
+    # 1. Extract the fluid solution and Newmark history before remeshing
+    # Before changing the fluid mesh, the algorithm must preserve the information required to continue the simulation.
+    # This includes:
+    #    The current physical fluid solution.
+    #    The current mesh motion.
+    #    The relative fluid motion.
+    #    The stored Newmark history needed to reconstruct consistent temporal derivatives.
+    # All these quantities are evaluated on the existing mesh and stored as numerical arrays.
 
-    a0dt2_key      = fluid_state['a0dt2_key']
+    #Retrieve the existing fluid fields
+    old_topo_fluid = fluid_state['topo_fluid'] #existing fluid topology.
+    x_field        = fluid_state['x_field']    #current physical coordinates.
+    v_field        = fluid_state['v_field']    #mesh velocity.
+    a_field        = fluid_state['a_field']    #mesh acceleration.
+    urel_field     = fluid_state['urel_field'] #relative fluid velocity
+    arel_field     = fluid_state['arel_field'] #relative fluid acceleration
+    p_field        = fluid_state['p_field']    #fluid pressure
+    d_field        = fluid_state['d_field']    #displacement field used for the existing fluid mesh.
+    d_name         = fluid_state['d_name']     #argument names associated with its displacement history.
+    a0dt2_key      = fluid_state['a0dt2_key']  #argument names associated with its acceleration history.  
 
+    #Recover the Newmark history variables
+    #The code creates fourth-order Gauss quadrature points on the existing fluid mesh:
     old_sample = old_topo_fluid.sample('gauss', 4)
 
-    a0dt2_expr = function.replace_arguments(d_field, [(d_name, a0dt2_key)])
-
-    # urel's Newmark history is always named 'u0'/'a0δt' since the relative velocity field is always (re)created with argument name 'u'.
-    u0_expr    = function.replace_arguments(urel_field, [('u', 'u0')])
+    #For the mesh displacement, the code retrieves the history. 
+    #"function.replace_arguments" creates a new symbolic expression by replacing the coefficient argument of an existing finite-element field with the corresponding history argument.
+    a0dt2_expr     = function.replace_arguments(d_field, [(d_name, a0dt2_key)])
+    u0_expr        = function.replace_arguments(urel_field, [('u', 'u0')]) #uses the same finite-element basis as urel_field, but evaluates it using the stored coefficients args['u0'] instead of args['u']
     a0dt_urel_expr = function.replace_arguments(urel_field, [('u', 'a0δt')])
-
+    
+    #Evaluate the old solution
+    #The function.eval() operation evaluates all the selected fields at the old mesh quadrature points using the current solution dictionary args.
+    #These are values evaluated at quadrature points, not the original finite-element coefficient vectors.
     (old_x_phys, old_v, old_a, old_urel, old_arel, old_p, old_a0dt2, old_u0, old_a0dt_urel) = function.eval([
             old_sample.bind(x_field),
             old_sample.bind(v_field),
@@ -213,40 +215,35 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
             old_sample.bind(p_field),
             old_sample.bind(a0dt2_expr),
             old_sample.bind(u0_expr),
-            old_sample.bind(a0dt_urel_expr)], arguments=args)
+            old_sample.bind(a0dt_urel_expr)], arguments=args) 
+    
+    #Reconstruct the physical fluid velocity
+    old_uf = old_v + old_urel   
 
-    old_uf = old_v + old_urel   # physical fluid velocity u_f = v_m + u_rel
-
+    #Convert quantities into numerical arrays
     old_x_m       = numpy.asarray(old_x_phys / 'm', dtype=float)
     old_uf_ms     = numpy.asarray(old_uf / 'm/s', dtype=float)
     old_p_Pa      = numpy.asarray(old_p / 'Pa', dtype=float)
     old_vm_ms     = numpy.asarray(old_v / 'm/s', dtype=float)
     old_am_ms2    = numpy.asarray(old_a / 'm/s2', dtype=float)
     old_arel_ms2  = numpy.asarray(old_arel / 'm/s2', dtype=float)
-
     old_a0dt2_m   = numpy.asarray(old_a0dt2 / 'm', dtype=float)
     old_urel_ms   = numpy.asarray(old_urel / 'm/s', dtype=float)
     old_u0_ms     = numpy.asarray(old_u0 / 'm/s', dtype=float)
-
     old_a0dt_urel_ms = numpy.asarray(old_a0dt_urel / 'm/s', dtype=float)
 
-    # ------------------------------------------------------------------
-    # 2. Record the current SOLID boundary state for the P_Γ interface mapping.  
-    
-    # This uses a Gauss sample so it can also serve as the quadrature rule for the FSI traction coupling and
-    # for the per-timestep d_m,Γ constraint, both built via zip+locate.
-    # ------------------------------------------------------------------
+    # 2. Extract the solid interface and prepare its geometry for remeshing
 
+    #Record the current solid interface
     solid_cyl_boundary  = topo['solid'].boundary['cylinder']
     solid_cyl_gauss     = solid_cyl_boundary.sample('gauss', 4)
-    solid_cyl_pts_now_m = numpy.asarray(function.eval(solid_cyl_gauss.bind(ns.x), arguments=args) / 'm', dtype=float)
-    d_s_remesh_const_m  = numpy.asarray(function.eval(solid_cyl_gauss.bind(ns.d), arguments=args) / 'm', dtype=float)
-    old_traction_located = old_topo_fluid.boundary['cylinder'].locate(
-        x_field / Length('1m'),
-        solid_cyl_pts_now_m,
-        tol=float(domain.cylinder_radius / 'm') * 1e-4,
-        arguments=args,
-        skip_missing=False)
+    solid_cyl_pts_now_m = numpy.asarray(function.eval(solid_cyl_gauss.bind(ns.x), arguments=args) / 'm', dtype=float) #Current physical position
+    d_s_remesh_const_m  = numpy.asarray(function.eval(solid_cyl_gauss.bind(ns.d), arguments=args) / 'm', dtype=float) #Current solid displacement
+
+    #Evaluate the old fluid traction
+    #The code therefore uses Topology.locate() to find points on the old fluid interface corresponding to the current solid interface quadrature points.
+    #The traction is evaluated using the old fluid solution. This operation is diagnostic: it does not apply forces to the solid or enforce traction continuity.
+    old_traction_located = old_topo_fluid.boundary['cylinder'].locate(x_field / Length('1m'), solid_cyl_pts_now_m, tol=float(domain.cylinder_radius / 'm') * 1e-4, arguments=args, skip_missing=False)
     
     ns_told = Namespace()
     ns_told.x = x_field
@@ -255,20 +252,23 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     ns_told.p = p_field
     ns_told.μf = fluid.viscosity
     
-    ns_told.tpres_i = '-p n_i'
+    ns_told.tpres_i = '-p n_i' # n : outward normal of the fluid domain.
     ns_told.tvisc_i = 'μf (∇_j(u_i) + ∇_i(u_j)) n_j'
     ns_told.ttot_i  = 'tpres_i + tvisc_i'
     
-    told_pres, told_visc, told_tot = function.eval(
+    told_pres, told_visc, told_tot = function.eval( #pressure traction, viscous traction, total traction
         [old_traction_located.bind(ns_told.tpres),
          old_traction_located.bind(ns_told.tvisc),
          old_traction_located.bind(ns_told.ttot)], arguments=args)
 
-    # Old mesh/solid interface velocity BEFORE remeshing
+    #Verify mesh–solid velocity compatibility before remeshing 
+    # v_m = v_s at the interface
+    #If a stored interface mapping "dm_zipped_interface" exists, it is reused. Otherwise, Topology.locate() identifies corresponding points on the old fluid boundary.
     if fluid_state.get('dm_zipped_interface') is not None:
         old_zipped = fluid_state['dm_zipped_interface']
         vm_old_g, vs_old_g = function.eval(
-            [old_zipped.bind(v_field), old_zipped.bind(ns.v)],
+            [old_zipped.bind(v_field), 
+             old_zipped.bind(ns.v)],
             arguments=args)
     else:
         old_interface_located = old_topo_fluid.boundary['cylinder'].locate(
@@ -277,31 +277,26 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
             tol=float(domain.cylinder_radius / 'm') * 1e-4,
             arguments=args,
             skip_missing=False)
+        #Velocities evaluated on the existing meshes, before remeshing
+        vm_old_g = function.eval(old_interface_located.bind(v_field), arguments=args) #old fluid mesh velocity evaluated at the fluid–solid interface.
+        vs_old_g = function.eval(solid_cyl_gauss.bind(ns.v), arguments=args)          #solid velocity evaluated at the same corresponding interface locations.
         
-        vm_old_g = function.eval(old_interface_located.bind(v_field), arguments=args)
-        vs_old_g = function.eval(solid_cyl_gauss.bind(ns.v), arguments=args)
     dv_old = numpy.linalg.norm(numpy.asarray((vm_old_g - vs_old_g) / 'm/s'), axis=-1)
     vs_old_ref = max(numpy.linalg.norm(numpy.asarray(vs_old_g / 'm/s'), axis=-1).max(), 1e-30)
 
     log.info(
         f'[INTERFACE BEFORE REMESH] ||v_m-v_s|| '
-        f'max={dv_old.max():.6e} m/s, '
-        f'rel={dv_old.max()/vs_old_ref:.6e}')
+        f'max={dv_old.max():.6e} m/s, ' #max abs error
+        f'rel={dv_old.max()/vs_old_ref:.6e}') #relative error
 
-    # Extract the solid's quadratic (P2) boundary edges as (P0, Pmid, P1) triples, in element order.  
-    # A bezier-3 sample yields exactly these three points per element.  
-    # These are converted to quadratic Bezier arcs in the new .geo so the fresh fluid boundary reproduces the solid interface. 
 
-    solid_cyl_bez3 = solid_cyl_boundary.sample('bezier', 3)
+    #Extract the quadratic solid boundary
+    solid_cyl_bez3 = solid_cyl_boundary.sample('bezier', 3) # extract the three physical points of each element.
     solid_cyl_bez3_pts_m = numpy.asarray(function.eval(solid_cyl_bez3.bind(ns.x), arguments=args) / 'm', dtype=float)
-    solid_p2_edges = [solid_cyl_bez3_pts_m[solid_cyl_bez3.getindex(ielem)] for ielem in range(solid_cyl_bez3.nelems)]
+    solid_p2_edges = [solid_cyl_bez3_pts_m[solid_cyl_bez3.getindex(ielem)] for ielem in range(solid_cyl_bez3.nelems)]  #resulting element coordinates
 
 
-    # Verify the element order actually traces a closed loop: the end point of each edge must coincide with the start point of the next, 
-    # and the last must close back onto the first.  Element ordering happens to be traversing for the present topology, 
-    # but that is an assumption, not a guarantee — if it breaks, the Bezier arcs would be stitched in the
-    # wrong order and the fresh boundary would be garbage.  If the check fails we reorder greedily by nearest-neighbour chaining.
-
+    #Verify that the particle boundary forms a closed loop, the last element must also connect to the first.
     def _edges_form_closed_loop(edges, tol):
         for e_this, e_next in zip(edges, edges[1:] + edges[:1]):
             if numpy.linalg.norm(e_this[2] - e_next[0]) > tol:
@@ -310,19 +305,20 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
 
     _loop_tol = float(domain.cylinder_radius / 'm') * 1e-6
     if not _edges_form_closed_loop(solid_p2_edges, _loop_tol):
-        log.info('[REMESH] solid P2 edges are not in traversing order; '
-                 'reordering by endpoint chaining.')
+        log.info('[REMESH] solid P2 edges are not in traversing order; reordering by endpoint chaining.')
         remaining = list(solid_p2_edges)
         ordered   = [remaining.pop(0)]
+        
         while remaining:
             tail = ordered[-1][2]
             j = min(range(len(remaining)),
-                    key=lambda k: min(numpy.linalg.norm(remaining[k][0] - tail),
-                                      numpy.linalg.norm(remaining[k][2] - tail)))
+                    key=lambda k: min(numpy.linalg.norm(remaining[k][0] - tail), numpy.linalg.norm(remaining[k][2] - tail)))
             e = remaining.pop(j)
-            if (numpy.linalg.norm(e[2] - tail) < numpy.linalg.norm(e[0] - tail)): e = e[::-1]          # flip edge so it continues the chain
+            
+            if (numpy.linalg.norm(e[2] - tail) < numpy.linalg.norm(e[0] - tail)): e = e[::-1] # flip edge so it continues the chain
             ordered.append(e)
         solid_p2_edges = ordered
+        
         if not _edges_form_closed_loop(solid_p2_edges, _loop_tol):
             raise RuntimeError(
                 'solid cylinder boundary edges do not form a closed loop; '
@@ -330,40 +326,41 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
         log.info('[REMESH] edge reordering succeeded; closed loop verified.')
     else:
         log.info('[REMESH] solid P2 edge connectivity verified (closed loop).')
+# the old fluid solution and solid geometry are known, but no new fluid mesh has been generated and no interface conditions have been modified.
+#_____________________________________________________________________________________________________________________________________________
 
-
-    # ------------------------------------------------------------------
-    # 3. Generate new fluid mesh, in its own gmsh "space" 
-    # so that Nutils' Topology.locate / Sample.zip can combine it with the persistent solid topology (which lives in the default space 'X').
-    # ------------------------------------------------------------------
-
-    # Use the P2 edge start points, in element order, as the .geo boundary vertices.  
-    # Element order already traverses the closed loop, so no angular sorting is needed.
-
-    xb_ordered = numpy.array([e[0] for e in solid_p2_edges], dtype=float)
+    # 3.Generate the new fluid mesh and match its boundary to the solid
+    #The procedure is:
+        # 1. Generate a new P2 fluid mesh using the deformed solid boundary.
+        # 2. Match each fluid boundary element to its corresponding solid element.
+        # 3. Correct the fluid midpoint nodes to reproduce the quadratic solid geometry.
+        # 4. Import the corrected fluid mesh into a new Nutils coordinate space.
+        # 5. Verify that the two interface geometries coincide numerically.
+    
+    # The current deformed solid boundary was extracted in the previous block as a collection of quadratic elements:
+    xb_ordered = numpy.array([e[0] for e in solid_p2_edges], dtype=float) #the starting points of these elements
     geo_file   = Path(f'remesh_fluid_{current_t_s:.6f}s.geo')
-    write_fluid_remesh_geo(xb_ordered, domain, geo_file,
-                           bezier_edges=solid_p2_edges)
+    write_fluid_remesh_geo(xb_ordered, domain, geo_file, bezier_edges=solid_p2_edges) #creates a Gmsh geometry file using the complete quadratic boundary information stored in solid_p2_edges
 
     fluid_space_name = f'Xfluid{remesh_index}'
     msh_file = geo_file.with_suffix('.msh')
 
-    subprocess.run(
-        ['gmsh', str(geo_file), '-2', '-order', '2',
-        '-format', 'msh2', '-o', str(msh_file)],
-        check=True)
+    subprocess.run(['gmsh', str(geo_file), '-2', '-order', '2','-format', 'msh2', '-o', str(msh_file)], check=True)
 
     mesh = meshio.read(msh_file)
     cylinder_id = int(mesh.field_data['cylinder'][0])
 
-    # Gmsh line3 connectivity: endpoint, endpoint, quadratic midpoint.
+    # The generated Gmsh mesh contains quadratic boundary elements of type line3.
+    # Each element contains three nodes, ordered by Gmsh as: [endpoint 0, endpoint 1, midpoint]
+
+    # It first verifies that the number of fluid boundary elements equals the number of solid boundary elements.
+    # Then, for every solid element, it searches for the corresponding fluid element by comparing their endpoints.
+    # Because the two meshes may have different element orientations, the code considers both possible endpoint arrangements.
     fluid_edge_nodes = []
     for cells, physical in zip(
             mesh.cells, mesh.cell_data['gmsh:physical']):
         if cells.type == 'line3':
-            fluid_edge_nodes.extend(
-                nodes for nodes, group in zip(cells.data, physical)
-                if group == cylinder_id)
+            fluid_edge_nodes.extend(nodes for nodes, group in zip(cells.data, physical) if group == cylinder_id)
 
     if len(fluid_edge_nodes) != len(solid_p2_edges):
         raise RuntimeError(
@@ -378,10 +375,8 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
             nodes = fluid_edge_nodes[j]
             p0, p1 = mesh.points[nodes[:2], :2]
             return min(
-                max(numpy.linalg.norm(p0 - solid_edge[0]),
-                    numpy.linalg.norm(p1 - solid_edge[2])),
-                max(numpy.linalg.norm(p1 - solid_edge[0]),
-                    numpy.linalg.norm(p0 - solid_edge[2])))
+                max(numpy.linalg.norm(p0 - solid_edge[0]), numpy.linalg.norm(p1 - solid_edge[2])),
+                max(numpy.linalg.norm(p1 - solid_edge[0]), numpy.linalg.norm(p0 - solid_edge[2])))
 
         j = min(unused, key=endpoint_error)
         error = endpoint_error(j)
@@ -389,23 +384,25 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
             raise RuntimeError(
                 f'Cannot match fluid edge to solid edge: '
                 f'endpoint error={error:.3e} m')
-
+        
+        #Correct the fluid boundary midpoint  to ensure that quadratic fluid and solid elements describe exactly the same curved boundary.
+        #Only the fluid boundary midpoint coordinates are modified. The solid mesh is not changed.
         unused.remove(j)
         midpoint_node = fluid_edge_nodes[j][2]
         mesh.points[midpoint_node, :2] = solid_edge[1]
 
     meshio.write(msh_file, mesh, file_format='gmsh22', binary=False)
+    #The corrected mesh is imported using:
+    #- `new_topo`: new fluid topology, including elements and boundary connectivity.
+    #- `new_geom_bare`: new fluid reference coordinates, stored as numerical coordinates without explicit physical units.
+    new_topo, new_geom_bare = gmsh(msh_file, space=fluid_space_name) 
 
-    new_topo, new_geom_bare = gmsh(
-        msh_file, space=fluid_space_name)
-    # Compare each persistent solid P2 edge with its fresh fluid boundary edge.
+    # Verify the new fluid–solid interface geometry
+    #After importing the corrected mesh, the code extracts the quadratic boundary elements again.
+    #It compares every solid boundary element with its corresponding new fluid element.
     fluid_bz3 = new_topo['fluid'].boundary['cylinder'].sample('bezier', 3)
-    fluid_pts = numpy.asarray(
-        function.eval(fluid_bz3.bind(new_geom_bare)), dtype=float)
-    fluid_edges = [
-        fluid_pts[fluid_bz3.getindex(i)]
-        for i in range(fluid_bz3.nelems)
-    ]
+    fluid_pts = numpy.asarray(function.eval(fluid_bz3.bind(new_geom_bare)), dtype=float)
+    fluid_edges = [fluid_pts[fluid_bz3.getindex(i)] for i in range(fluid_bz3.nelems)]
 
     if len(fluid_edges) != len(solid_p2_edges):
         raise RuntimeError(
@@ -419,7 +416,6 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     worst_midpoint_error = -1.0
 
     for solid_edge in solid_p2_edges:
-        # Match by both endpoints; allow opposite edge orientation.
         def endpoint_error(j):
             fluid_edge = fluid_edges[j]
             forward = max(
@@ -433,8 +429,7 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
         j = min(unused, key=endpoint_error)
         unused.remove(j)
         endpoint_errors.append(endpoint_error(j))
-        midpoint_errors.append(
-            numpy.linalg.norm(solid_edge[1] - fluid_edges[j][1]))
+        midpoint_errors.append(numpy.linalg.norm(solid_edge[1] - fluid_edges[j][1]))
 
         if midpoint_errors[-1] > worst_midpoint_error:
             worst_midpoint_error = midpoint_errors[-1]
@@ -471,37 +466,54 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     new_geom = new_geom_bare * Length('m')
     log.info(f'New fluid mesh generated from {geo_file} (space={fluid_space_name})')
 
-    # ------------------------------------------------------------------
-    # 4. Define new fluid fields on new_topo['fluid']
-    # new_ns: unknown fields
-    # ------------------------------------------------------------------
-    new_ns = ns   # reuse namespace object; overwrite fluid-specific entries
+#The new fluid mesh and its reference geometry are available.
+#No fluid solution has been transferred yet, and no fluid–solid interface conditions have been imposed on the new mesh.
+#_____________________________________________________________________________________________________________________________________________
 
+    # 4.Define the fluid unknowns on the new mesh
+    #The new fluid mesh has different finite-element degrees of freedom from the old mesh.
+    #Therefore, the algorithm must redefine the fluid unknowns on the new topology.
+    #Three primary fields are introduced: dm, u, p
+
+    new_ns = ns   #Reuse the existing namespace, preserving the solid-related definitions while replacing the fluid-related fields.
+
+    #The new fluid mesh displacement is defined using quadratic (P2) finite elements: The corresponding unknown is dm.
     dm_basis = new_topo['fluid'].basis('std', degree=2)
     new_ns.dm = function.field('dm', dm_basis, shape=(2,)) * domain.cylinder_radius
+
     if dynamic:
         new_ns.vm, new_ns.am = dynamic.newmark_defo_named(new_ns.dm, name='dm', d0_name='dm0', u0dt_name='vm0δt', a0dt2_name='am0δt2')
     else:
         new_ns.vm = Velocity.wrap(function.zeros((2,)))
         new_ns.am = Acceleration.wrap(function.zeros((2,)))
-
+         
+    #The relative fluid velocity is also represented using quadratic (P2) finite elements: The unknown is named u, and its coefficients are multiplied by the characteristic fluid velocity U.
     new_ns.urel = new_topo['fluid'].field('u', btype='std', degree=2, shape=(2,)) * fluid.velocity
     if dynamic:
         new_ns.arel = dynamic.newmark_velo(new_ns.urel)
         new_ns.u_i  = 'vm_i + urel_i'
     else:
         new_ns.u_i  = 'urel_i'
-
+        
+    #The pressure is represented using linear (P1) finite elements:
     new_ns.p = (new_topo['fluid'].field('p', btype='std', degree=1) * fluid.viscosity * fluid.velocity / domain.cylinder_radius)
 
+    #The code creates two test-function fields:
+        #- `utest`: associated with the relative fluid velocity `u`.
+        #- `ptest`: associated with the fluid pressure `p`.
     new_ns.utest = function.replace_arguments(new_ns.urel, 'u:utest') / fluid.viscosity / fluid.velocity**2
     new_ns.ptest = function.replace_arguments(new_ns.p,    'p:ptest') / fluid.viscosity / fluid.velocity**2
+    #The functions are constructed using function.replace_arguments(), which replaces the unknown coefficient argument with the corresponding test-function argument.
+#At this stage, the code only defines symbolic finite-element fields. Their coefficients have not yet been initialized using the old fluid solution, and no governing equations have been solved.
+#_____________________________________________________________________________________________________________________________________________
 
-    # ------------------------------------------------------------------
-    # 5. ns_f: gradients/measures on the MOVING ALE geometry
-    # fluid physics on the current ALE geometry 
-    # ------------------------------------------------------------------
-    ns_f        = Namespace()
+    # 5. Define the fluid ALE equations and mesh-extension model 
+    #After remeshing, two different mathematical descriptions are required.
+        # The physical fluid problem (ns_f) uses the current moving geometry to calculate fluid acceleration, velocity gradients, stresses, and traction.
+        # The artificial mesh-extension problem (ns_m) uses the new reference geometry to determine how the mesh deforms as the particle continues moving.
+        # Both descriptions depend on the same mesh displacement field dm, but they use different gradient operators.
+
+    ns_f        = Namespace() #physical fluid formulation in the current ALE configuration.
     ns_f.δ      = new_ns.δ
     ns_f.ρf     = new_ns.ρf
     ns_f.μf     = new_ns.μf
@@ -509,7 +521,7 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     ns_f.dm     = new_ns.dm
     ns_f.xm_i   = 'xfnew_i + dm_i'
 
-    ns_f.define_for('xm', gradient='∇', normal='n', jacobians=('dV', 'dS'))
+    ns_f.define_for('xm', gradient='∇', normal='n', jacobians=('dV', 'dS')) # all fluid quantities are evaluated in the current configuration rather than the reference configuration.
 
     ns_f.urel   = new_ns.urel
     ns_f.p      = new_ns.p
@@ -527,7 +539,7 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     ns_f.edot_ij = '.5 (∇_j(u_i) + ∇_i(u_j))'
     ns_f.σ_ij    = 'μf (∇_j(u_i) + ∇_i(u_j)) - p δ_ij'
 
-    ns_f.traction_i = 'σ_ij n_j'   # fluid stress vector, for the FSI coupling
+    ns_f.traction_i = 'σ_ij n_j'   
     ns_f.tpres_i = '-p n_i'
     ns_f.tvisc_i = 'μf (∇_j(u_i) + ∇_i(u_j)) n_j'
     new_ns.tsolid_i = 'σcauchy_ij n_j'
@@ -536,9 +548,8 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     ns_f.ptest   = new_ns.ptest
     ns_f.dtest   = new_ns.dtest
 
-    # ns_m: mesh-extension namespace, ∇ref w.r.t. the epoch reference new_geom
 
-    ns_m        = Namespace()
+    ns_m        = Namespace() #artificial mesh-extension formulation relative to the new fluid reference configuration. It describes how the fluid mesh deforms relative to the reference configuration created at remeshing.
     ns_m.δ      = new_ns.δ
     ns_m.xfnew  = new_geom
 
@@ -547,28 +558,38 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     ns_m.dm     = new_ns.dm
     ns_m.xm_i   = 'xfnew_i + dm_i'
     ns_m.Fm_ij  = '∇ref_j(xm_i)'
-    ns_m.Jm     = numpy.linalg.det(ns_m.Fm)
+    ns_m.Jm     = numpy.linalg.det(ns_m.Fm) #measures the local change in mesh element area. This resembles a hyperelastic constitutive relation but is not the stress of a physical material.
     ns_m.Fminv  = numpy.linalg.inv(ns_m.Fm)
-    ns_m.Pmesh_ij = '2 (Fm_ij - Fminv_ji)'
-    ns_m.dmtest = function.replace_arguments(new_ns.dm, 'dm:dmtest') / (domain.cylinder_radius**2 * Pressure('1Pa'))
 
-    # ------------------------------------------------------------------
-    # 6. Build the new residual
-    # ------------------------------------------------------------------
-    res_d_internal = topo['solid'].integral('∇ref_j(dtest_i) P_ij dVref' @ new_ns, degree=4)
-    res_d_inertia  = topo['solid'].integral('dtest_i ρs (a_i - g_i) dVref' @ new_ns, degree=4)
-    res_d_cmforce  = topo['solid'].integral('dtest_i cmforce_i dVref' @ new_ns, degree=4)
+    ns_m.Pmesh_ij = '2 (Fm_ij - Fminv_ji)' #artificial mesh stress
+    ns_m.dmtest = function.replace_arguments(new_ns.dm, 'dm:dmtest') / (domain.cylinder_radius**2 * Pressure('1Pa')) #the test function associated with mesh displacement
+#At this stage, the code defines the mathematical quantities required for both problems. Neither the fluid equations nor the mesh-extension equations have been solved yet.
+#_____________________________________________________________________________________________________________________________________________
 
+    # 6. Rebuild the governing equations and fluid–solid interface coupling
+
+    # This block first rebuilds the governing equations on the remeshed domain.
+    # It then establishes corresponding interface points between the independent fluid and solid meshes.
+    # Finally, it introduces two different Lagrange multipliers: 
+        #lamf: Physical fluid–solid coupling and interface reaction (urel=0)
+        #lam: Artificial mesh–solid displacement compatibility (d_m = d_s - d_s(t_r))
+
+    #Solid momentum equation
+    res_d_internal = topo['solid'].integral('∇ref_j(dtest_i) P_ij dVref' @ new_ns, degree=4) #internal elastic force.
+    res_d_inertia  = topo['solid'].integral('dtest_i ρs (a_i - g_i) dVref' @ new_ns, degree=4) #solid inertia and body forces
+    res_d_cmforce  = topo['solid'].integral('dtest_i cmforce_i dVref' @ new_ns, degree=4) #reaction associated with the center position constrained
     new_res = res_d_internal + res_d_inertia + res_d_cmforce
-    new_res += topo['solid'].integral('cmtest_i x_i dVref' @ new_ns, degree=4) / domain.cylinder_radius**3
+    new_res += topo['solid'].integral('cmtest_i x_i dVref' @ new_ns, degree=4) / domain.cylinder_radius**3 #to keep the particle fixed
 
-    # Mesh extension for d_m (elasticity-type smoothing, epoch reference new_geom)
+    #Artificial mesh-extension equation
     res_mesh_bulk = Pressure('1Pa') * new_topo['fluid'].integral('∇ref_j(dmtest_i) Pmesh_ij dVref' @ ns_m, degree=4)
     new_res += res_mesh_bulk
-    # Fluid momentum and incompressibility, gradients w.r.t. moving x_m
+
+    #Fluid momentum equation
     res_fluid_am   = new_topo['fluid'].integral('utest_i ρf am_i dV' @ ns_f, degree=4)
     res_fluid_arel = new_topo['fluid'].integral('utest_i ρf arel_i dV' @ ns_f, degree=4)
     res_fluid_acc  = res_fluid_am + res_fluid_arel
+
     res_fluid_conv = new_topo['fluid'].integral('utest_i ρf ∇_j(u_i) urel_j dV' @ ns_f, degree=4)
     res_fluid_visc = new_topo['fluid'].integral('∇_j(utest_i) μf (∇_j(u_i) + ∇_i(u_j)) dV' @ ns_f, degree=4)
     res_fluid_pres = new_topo['fluid'].integral('-∇_j(utest_i) p δ_ij dV' @ ns_f, degree=4)
@@ -579,31 +600,24 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     new_res += res_fluid_mom
     new_res += res_fluid_inc
 
-    # ------------------------------------------------------------------
-    # FSI coupling: fluid traction acting on the solid boundary.
-    #
-    # After remeshing, fluid and solid no longer share a common finite-element topology, so the original "volume lift" identity
-    # ∮ d·σ·n dΓ = ∫ (∇d:σ + d·ρDuDt) dV (valid only when d and u share dofs on the SAME mesh) no longer applies.  
-    # Instead we impose the coupling directly as a boundary traction term, evaluated at matching physical points via
-    # Topology.locate, combined via Sample.zip so that the solid's own Gauss quadrature provides the (correct, persistent) weights:
-    # ∮_cylinder dtest_i (σ_ij n_j) dΓ
-
+    #find corresponding points between the solid boundary and the newly generated fluid boundary, so that the two independent meshes can be coupled.
     locate_tol_m = float(domain.cylinder_radius / 'm') * 1e-4
-
     try:
-        fluid_traction_located = new_topo['fluid'].boundary['cylinder'].locate(
-            new_geom_bare, solid_cyl_pts_now_m, tol=locate_tol_m, skip_missing=False)
+        fluid_traction_located = new_topo['fluid'].boundary['cylinder'].locate(new_geom_bare, solid_cyl_pts_now_m, tol=locate_tol_m, skip_missing=False)
     except Exception:
         log.info(
             f'[REMESH] locate failed at tol={locate_tol_m:.3e} m; '
             f'retrying with a looser tolerance.')
         
         locate_tol_m *= 100.
-
-        fluid_traction_located = new_topo['fluid'].boundary['cylinder'].locate(new_geom_bare, solid_cyl_pts_now_m, tol=locate_tol_m, skip_missing=False)
         
+        fluid_traction_located = new_topo['fluid'].boundary['cylinder'].locate(new_geom_bare, solid_cyl_pts_now_m, tol=locate_tol_m, skip_missing=False)
+        #returns a Nutils sample containing the locations on the new fluid boundary corresponding to the supplied solid interface coordinates.
+
     log.info(f'[REMESH] FSI traction coupling located at tol={locate_tol_m:.3e} m')
 
+    #zip() combines 3 SOLID MESH POINTS and 3 LOCATED FLUID MESH POINTS into a paired interface sample.
+    #Consequently, we can evaluate a solid field and a fluid field together in the same interface integral. e.g. new_ns.dtest and new_ns.lamf
     zipped_traction = solid_cyl_gauss.zip(fluid_traction_located)
     x_fluid_loc_m = numpy.asarray(function.eval(fluid_traction_located.bind(new_geom_bare)), dtype=float)
     loc_err = numpy.linalg.norm(x_fluid_loc_m - solid_cyl_pts_now_m, axis=-1)
@@ -617,16 +631,21 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     if loc_err.max() > 1e-4 * float(domain.cylinder_radius / 'm'):
         raise RuntimeError(f'Fresh interface differs from solid: max={loc_err.max():.3e} m')
 
-    
+    #The code evaluates the P2 mesh displacement basis on the interface, identifies which DOFs are active there, and uses their indices to construct the interface multiplier spaces. (e.g. lamf)
+    #It does not impose any constraint or solve any equation yet.
 
-    # Diagnostic trace-space map between solid and fresh-fluid interface DOFs
-    Bf4 = function.eval(zipped_traction.bind((new_ns.dm / Length('1m')).derivative('dm')))
+    #Identify the fluid mesh basis functions at the interface
+    Bf4 = function.eval(zipped_traction.bind((new_ns.dm / Length('1m')).derivative('dm'))) #tells us which DOFs influence the displacement at the interface.
+
+    #Find which DOFs contribute to the interface
+        #Each column of Bf corresponds to one displacement DOF.
+        #If a column is zero, that DOF has no influence on the displacement at the sampled interface points.
+        #If a column is nonzero, its basis function contributes to the interface displacement.
     Bf = Bf4.reshape(Bf4.shape[0] * Bf4.shape[1], -1)
-
     dm_norm = numpy.linalg.norm(Bf, axis=0)
 
-    i_dm_gamma = numpy.flatnonzero(dm_norm > 1e-12 * dm_norm.max())
-    i_dm_gamma_scalar = numpy.unique(i_dm_gamma // 2)
+    i_dm_gamma = numpy.flatnonzero(dm_norm > 1e-12 * dm_norm.max()) #vector interface degrees of freedom.
+    i_dm_gamma_scalar = numpy.unique(i_dm_gamma // 2) #corresponding scalar P2 basis-function indices.
     i_dm_expected = numpy.sort((2 * i_dm_gamma_scalar[:, None] + numpy.arange(2)).ravel())
 
     if not numpy.array_equal(numpy.sort(i_dm_gamma), i_dm_expected):
@@ -636,32 +655,33 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
         f'[INTERFACE TRACE BASIS] '
         f'scalar P2 trace dofs={len(i_dm_gamma_scalar)}'
     )
-    res_d_traction = zipped_traction.integral(_dot2(new_ns.dtest, ns_f.traction) * new_ns.dS)
-    # Fluid-solid interface multiplier: enforces urel = 0 and carries the discrete reaction.
+    # This procedure identifies the interface finite-element basis functions.
+
+    # Introduce the physical fluid–solid coupling through "lamf"
+    #The same unknown provides both:
+        # 1. The force required to enforce the kinematic constraint.
+        # 2. The equal-and-opposite interface force contributions in the fluid and solid equations.
+    # This is how the fluid transfers its physical force to the solid after remeshing.
     fluid_stress_scale = fluid.viscosity * fluid.velocity / domain.cylinder_radius
-    
     lamf_basis = dm_basis[i_dm_gamma_scalar]
-    new_ns.lamf = (function.field('lamf', lamf_basis, shape=(2,)) * fluid_stress_scale)
-    
+    new_ns.lamf = (function.field('lamf', lamf_basis, shape=(2,)) * fluid_stress_scale) #This multiplier is represented using the quadratic interface basis identified previously.
     new_ns.lamftest = (function.replace_arguments(new_ns.lamf, 'lamf:lamftest') / (fluid_stress_scale * fluid.velocity * domain.cylinder_radius))
-    
     # Fluid equation: -∫ utest · lamf
     res_fluid_lamf = -zipped_traction.integral(_dot2(new_ns.utest, new_ns.lamf) * new_ns.dS)
-    
     # Solid equation: +∫ dtest · lamf
     res_solid_lamf = zipped_traction.integral(_dot2(new_ns.dtest, new_ns.lamf) * new_ns.dS)
-    
     # No-slip constraint: urel = 0 on the interface
     res_lamf_constraint = zipped_traction.integral(_dot2(new_ns.lamftest, new_ns.urel) * new_ns.dS)
-    
     new_res += res_fluid_lamf
     new_res += res_solid_lamf
     new_res += res_lamf_constraint
 
+    #Construct a diagnostic fluid reaction map
     test_unit = Pressure('1Pa') * Length('1m')
     dtest_dimless = new_ns.dtest * test_unit
     utest_dimless = new_ns.utest * test_unit
-    
+
+    #Evaluate the derivatives of the solid and fluid test functions with respect to their coefficients:
     Bd4 = function.eval(zipped_traction.bind(dtest_dimless.derivative('dtest')))
     Bd = Bd4.reshape(Bd4.shape[0] * Bd4.shape[1], -1)
     
@@ -671,76 +691,52 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     Bd_norm = numpy.linalg.norm(Bd, axis=0)
     Bu_norm = numpy.linalg.norm(Bu, axis=0)
     
-    i_d_gamma = numpy.flatnonzero(Bd_norm > 1e-12 * Bd_norm.max())
-    i_u_gamma = numpy.flatnonzero(Bu_norm > 1e-12 * Bu_norm.max())
+    i_d_gamma = numpy.flatnonzero(Bd_norm > 1e-12 * Bd_norm.max()) #solid interface DOFs.
+    i_u_gamma = numpy.flatnonzero(Bu_norm > 1e-12 * Bu_norm.max()) #fluid velocity interface DOFs.
 
-    Tdu = numpy.linalg.lstsq(Bu[:, i_u_gamma], Bd[:, i_d_gamma], rcond=None)[0]
-    
+    # The corresponding test functions cannot necessarily be matched by simply identifying DOF indices.
+    # Instead, a least-squares transformation is calculated:
+    Tdu = numpy.linalg.lstsq(Bu[:, i_u_gamma], Bd[:, i_d_gamma], rcond=None)[0] #This transformation approximately represents the solid interface test functions using the fluid interface test functions: B_u T_du = B_d
+    #This relationship is useful for comparing interface reactions before and after remeshing.
     trace_error = numpy.linalg.norm(Bu[:, i_u_gamma] @ Tdu - Bd[:, i_d_gamma]) / numpy.linalg.norm(Bd[:, i_d_gamma])
     log.info(f'[FLUID REACTION MAP] trace relerror={trace_error:.6e}')
 
-    dtest_arg = function.Argument('dtest', function.arguments_for(dtest_dimless)['dtest'].shape)
-    dtest_gamma = numpy.take(numpy.ravel(dtest_arg),i_d_gamma)
-    utest_gamma = function.asarray(Tdu) @ dtest_gamma
-    utest_flat = function.scatter(utest_gamma, Bu.shape[1], function.asarray(i_u_gamma))
-    utest_from_dtest = numpy.reshape(utest_flat, function.arguments_for(utest_dimless)['utest'].shape)
+    #Store the solid displacement at the remeshing instant
+    d_s_remesh_coeffs = numpy.array(args['d'], copy=True) #the solid displacement at the remeshing time: d_s(t_r)
+    d_s_remesh_field = function.replace_arguments(new_ns.d, {'d': d_s_remesh_coeffs}) #reconstructs this fixed displacement field 
+    dm_interface_target_expr = (new_ns.d - d_s_remesh_field) 
 
-    res_d_fluid_reaction = function.replace_arguments(res_fluid_mom, {'utest': utest_from_dtest})
-    #new_res += res_d_fluid_reaction
-
-    # Interface target 
-    d_s_remesh_coeffs = numpy.array(args['d'], copy=True)
-
-    d_s_remesh_field = function.replace_arguments(new_ns.d, {'d': d_s_remesh_coeffs})
-    dm_interface_target_expr = (new_ns.d - d_s_remesh_field)
-
-    lam_basis = dm_basis[i_dm_gamma_scalar]
+    #Enforce the displacement compatibility condition between the new fluid mesh and the persistent solid boundary.
+    #The solid displacement remains an unknown of the coupled system. 
+    #Therefore, the target mesh displacement evolves during Newton iterations. 
+    #This is why the interface displacement is enforced through the coupled multiplier constraint instead of being fixed to its previous value.
+    lam_basis = dm_basis[i_dm_gamma_scalar] 
     new_ns.lam = (function.field('lam', lam_basis, shape=(2,)) * solid.shear_modulus)
     new_ns.lamtest = function.replace_arguments(new_ns.lam, 'lam:lamtest') / (solid.shear_modulus * domain.cylinder_radius**2)
 
-    # Reaction term: +∫ λ·δd_m  ONLY.
-    # The multiplier must NOT push back on the solid (no −∫ λ·δd_s term).
-    # The mesh-extension problem is artificial numerical machinery; its reaction is not a physical force.  
-    # The genuine fluid force on the solid is already supplied by the traction term above.  
-    # The coupling is therefore one-directional in the kinematic sense:
-    
     res_mesh_lam = zipped_traction.integral(_dot2(ns_m.dmtest, new_ns.lam) * new_ns.dS)
     res_mesh_constraint = zipped_traction.integral(_dot2(new_ns.lamtest, new_ns.dm - dm_interface_target_expr) * new_ns.dS)
     
     new_res += res_mesh_lam
     new_res += res_mesh_constraint
+#At the end of this block, the bulk governing equations and the weak interface coupling terms are assembled in new_res. However, the coupled nonlinear system has not yet been solved.
+#_____________________________________________________________________________________________________________________________________________
 
-    # ------------------------------------------------------------------
-    # 7. Rebuild constraints
-    #
-    # d_m is fixed to zero only on the OUTER fluid boundary.  
-    # The cylinder (interface) boundary is intentionally NOT constrained here — its value is d_m,Γ = P_Γ(d_s - d_s^remesh), 
-    # which must be refreshed every timestep as the solid keeps moving.  
-    # ------------------------------------------------------------------
-    
+    # 7. Rebuild the boundary conditions on the remeshed system
+    # The fluid–solid interface conditions are not imposed directly through new_cons. They are already enforced weakly using the Lagrange multipliers lamf and lam
     new_cons = {}
 
-    sqr_ds = topo.boundary.integral('d_k d_k dSref' @ new_ns, degree=4) / domain.cylinder_radius**3
+    sqr_ds = topo.boundary.integral('d_k d_k dSref' @ new_ns, degree=4) / domain.cylinder_radius**3 # Preserve d = 0 on the original topology's outer boundary
     new_cons = System(sqr_ds, trial='d').solve_constraints(droptol=1e-9, constrain=new_cons)
 
-    # Outer (stationary) fluid boundary: dm = 0.  This constraint is FIXED for the whole epoch, 
-    # so we keep it separately as dm_outer_cons and rebuild the full dm constraint from it every timestep.  
-    # Nutils treats finite entries as already-constrained and skips them, giving d_m,Γ^{n+1} = d_m,Γ^n while the solid keeps moving.
-
-    sqr_dm_outer = new_topo['fluid'].boundary['outer'].integral('dm_k dm_k dSref' @ ns_m, degree=4) / domain.cylinder_radius**3
-
+    sqr_dm_outer = new_topo['fluid'].boundary['outer'].integral('dm_k dm_k dSref' @ ns_m, degree=4) / domain.cylinder_radius**3 #d_m = 0 on the channel walls
     dm_outer_only = System(sqr_dm_outer, trial='dm').solve_constraints(droptol=1e-9)
     dm_outer_cons = dm_outer_only['dm'].copy()
-
-    # The interface value of d_m is NOT constrained here: it is imposed monolithically by the Lagrange-multiplier residual built above, 
-    # so Newton can update d_s and d_m,Γ together.  
-    # Only the stationary outer fluid boundary is a Dirichlet constraint.
 
     new_cons = dict(new_cons)
     new_cons['dm'] = dm_outer_cons.copy()
 
-    # u (urel): no-slip + inflow on fluid boundary
-
+    #Impose the external fluid velocity
     ns_bc = Namespace()
     ns_bc.urel  = new_ns.urel
     ns_bc.xfnew = new_geom
@@ -748,50 +744,41 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     ns_bc.define_for('xfnew', gradient='∇ref', jacobians=('dVref', 'dSref'))
 
     ns_bc.δ = new_ns.δ
+    # Extensional flow conditions:
     ns_bc.epsdot = fluid.velocity / (2 * domain.cylinder_radius)
     ns_bc.uext_i = 'epsdot (δ_i0 xfnew_0 - δ_i1 xfnew_1)'
-    # sqr_u = new_topo['fluid'].boundary['cylinder'].integral('urel_i urel_i dSref' @ ns_bc, degree=4) / (2 * domain.cylinder_radius * fluid.velocity**2)
-    # sqr_u += new_topo['fluid'].boundary['outer'].integral('(urel_i - uext_i) (urel_i - uext_i) dSref' @ ns_bc, degree=4) / (2 * domain.cylinder_radius * fluid.velocity**2)
-    sqr_u = new_topo['fluid'].boundary['outer'].integral('(urel_i - uext_i) (urel_i - uext_i) dSref' @ ns_bc, degree=4) / (2 * domain.cylinder_radius * fluid.velocity**2)
 
+    sqr_u = new_topo['fluid'].boundary['outer'].integral('(urel_i - uext_i) (urel_i - uext_i) dSref' @ ns_bc, degree=4) / (2 * domain.cylinder_radius * fluid.velocity**2)
     new_cons = System(sqr_u, trial='u').solve_constraints(droptol=1e-9, constrain=new_cons)
     new_ucons = new_cons['u'].copy()
+
+    #Fix the pressure reference: Fixing one pressure DOF provides a pressure reference without prescribing the pressure throughout the domain.
     pcons = numpy.full(function.arguments_for(new_ns.p)['p'].shape, numpy.nan)
     pcons[0] = 0.0
     new_cons['p'] = pcons
+#_____________________________________________________________________________________________________________________________________________
 
-    # ------------------------------------------------------------------
-    # 8. Build new Newton system
-    # ------------------------------------------------------------------
+    # 8. Build new Newton system, only the construction not executing the iterations
     new_system = System(new_res, trial=['d', 'cm', 'dm', 'u', 'p', 'lam', 'lamf'], test=['dtest', 'cmtest', 'dmtest', 'utest', 'ptest', 'lamtest', 'lamftest'])
+#______________________________________________________________________________________________________________________________________________________________________________
 
-    # ------------------------------------------------------------------
-    # 9. Transfer solution to new mesh (physical coordinates, physical velocity, full Newmark history for both d_m and u_rel)
-    # ------------------------------------------------------------------
-    # Gauss quadrature is the natural sample for an L2 / least-squares projection (bezier sampling is a visualisation/interpolation device).
-     
-    new_dof_sample = new_topo['fluid'].sample('gauss', 4)
-    new_dof_x_m    = numpy.asarray(new_dof_sample.eval(new_geom) / 'm', dtype=float)
+    # 9. Transfer the old fluid solution onto the new mesh
+    #  Evaluate the fluid solution and its time-integration history from the old fluid mesh at the quadrature points of the newly generated fluid mesh.
 
-    # Field transfer: evaluate the OLD fields directly at the NEW sample points by locating those points in the old physical ALE mesh.  
-    # This is exact (uses the old FE basis) and, unlike LinearNDInterpolator with fill_value=0, does not silently zero points that fall outside
-    # the convex hull of the old Gauss cloud — which happens precisely near the cylinder, where accuracy matters most.
-    # Independent of locate_tol_m, which the FSI-coupling block above may have loosened on retry; that must not silently affect field transfer.
+    #Define the evaluation points on the new fluid mesh. These are the physical locations where the old solution must be evaluated.
+    new_dof_sample = new_topo['fluid'].sample('gauss', 4) #creates a fourth-order Gauss quadrature points
+    new_dof_x_m    = numpy.asarray(new_dof_sample.eval(new_geom) / 'm', dtype=float) # evaluates the physical coordinates of these points
+
     R_m = float(domain.cylinder_radius / 'm')
     transfer_via_locate = False
     new_graduf = None
     
     for transfer_tol_m in [1e-4*R_m, 5e-4*R_m, 1e-3*R_m]:
-    
         try:
-            old_located = old_topo_fluid.locate(
-                x_field / Length('1m'),
-                new_dof_x_m,
-                tol=transfer_tol_m,
-                arguments=args,
-                skip_missing=False,
-            )
-    
+            #Find the corresponding positions in the old fluid topology where the existing finite-element solution can be evaluated.
+            old_located = old_topo_fluid.locate(x_field / Length('1m'), new_dof_x_m, tol=transfer_tol_m, arguments=args, skip_missing=False)
+            
+            #Evaluate the old solution and Newmark history
             (t_uf, t_vm, t_am, t_urel, t_arel, t_p,
              t_a0dt2, t_u0, t_a0dt_urel) = function.eval([
                 old_located.bind(v_field + urel_field),
@@ -802,32 +789,27 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
                 old_located.bind(p_field),
                 old_located.bind(a0dt2_expr),
                 old_located.bind(u0_expr),
-                old_located.bind(a0dt_urel_expr),
-            ], arguments=args)
-    
+                old_located.bind(a0dt_urel_expr)], arguments=args)
+
+            #Transfer the physical fluid velocity "gradient"
             ns_old_grad = Namespace()
             ns_old_grad.x = x_field
-            ns_old_grad.define_for('x', gradient='∇')
+            ns_old_grad.define_for('x', gradient='∇') #It defines gradients with respect to the old physical fluid geometry
             ns_old_grad.uf = v_field + urel_field
     
-            t_graduf = function.eval(
-                old_located.bind('∇_j(uf_i)' @ ns_old_grad),
-                arguments=args,
-            )
-            new_graduf = numpy.asarray(t_graduf / '1/s', dtype=float)
-    
+            t_graduf = function.eval(old_located.bind('∇_j(uf_i)' @ ns_old_grad), arguments=args) #evaluates the gradient at the located points. 
+            new_graduf = numpy.asarray(t_graduf / '1/s', dtype=float) # contains the physical fluid velocity gradient, not the gradient of the relative velocity alone.
+
+            #Convert the evaluated quantities into numerical arrays
             new_uf_x, new_uf_y = numpy.asarray(t_uf / 'm/s', dtype=float).T
             new_vm_x, new_vm_y = numpy.asarray(t_vm / 'm/s', dtype=float).T
             new_am_x, new_am_y = numpy.asarray(t_am / 'm/s2', dtype=float).T
             new_urel_x, new_urel_y = numpy.asarray(t_urel / 'm/s', dtype=float).T
             new_arel_x, new_arel_y = numpy.asarray(t_arel / 'm/s2', dtype=float).T
             new_p_Pa = numpy.asarray(t_p / 'Pa', dtype=float)
-    
             new_a0dt2_x, new_a0dt2_y = numpy.asarray(t_a0dt2 / 'm', dtype=float).T
             new_u0_x, new_u0_y = numpy.asarray(t_u0 / 'm/s', dtype=float).T
-            new_a0dt_urel_x, new_a0dt_urel_y = numpy.asarray(
-                t_a0dt_urel / 'm/s', dtype=float
-            ).T
+            new_a0dt_urel_x, new_a0dt_urel_y = numpy.asarray(t_a0dt_urel / 'm/s', dtype=float).T
     
             transfer_via_locate = True
     
@@ -843,126 +825,121 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
                 f'[REMESH] Topology.locate failed with '
                 f'tol={transfer_tol_m:.3e} m: {ex}'
             )
-
-    if not transfer_via_locate:
+    
+    #Alternative interpolation if geometric location fails
+    if not transfer_via_locate: 
 
         def _I(vals):
-            return LinearNDInterpolator(old_x_m, vals, fill_value=0.0)(new_dof_x_m)
+            return LinearNDInterpolator(old_x_m, vals, fill_value=0.0)(new_dof_x_m) #constructs values at the new quadrature points using previously sampled coordinates and values from the old mesh.
 
         new_uf_x = _I(old_uf_ms[:, 0])
         new_uf_y = _I(old_uf_ms[:, 1])
-
         new_vm_x = _I(old_vm_ms[:, 0])
         new_vm_y = _I(old_vm_ms[:, 1])
-
         new_am_x = _I(old_am_ms2[:, 0])
         new_am_y = _I(old_am_ms2[:, 1])
-
         new_urel_x = _I(old_urel_ms[:, 0])
         new_urel_y = _I(old_urel_ms[:, 1])
-
         new_arel_x = _I(old_arel_ms2[:, 0])
         new_arel_y = _I(old_arel_ms2[:, 1])
-
         new_p_Pa = _I(old_p_Pa)
-
         new_a0dt2_x = _I(old_a0dt2_m[:, 0])
         new_a0dt2_y = _I(old_a0dt2_m[:, 1])
-
         new_u0_x = _I(old_u0_ms[:, 0])
         new_u0_y = _I(old_u0_ms[:, 1])
-
         new_a0dt_urel_x = _I(old_a0dt_urel_ms[:, 0])
         new_a0dt_urel_y = _I(old_a0dt_urel_ms[:, 1])
 
     if new_graduf is None:
         raise RuntimeError('Gradient-preserving restart requires locate-based transfer.')
 
-
+    #Retrieve the Newmark integration parameters
     beta, gamma, dt = dynamic.beta, dynamic.gamma, float(dynamic.timestep / 's')
+    # beta: displacement integration parameter.
+    # gamma: velocity integration parameter.
+    # dt: physical time-step size in seconds.
 
-    # ------------------------------------------------------------------
-    # 10. Project all interpolated fields onto new dof arrays via L2 solve
-    # ------------------------------------------------------------------
+#At the end of this block, the code has obtained pointwise values on the new fluid mesh for:
+    # - Physical fluid velocity and pressure.
+    # - Mesh velocity and acceleration.
+    # - Relative fluid velocity and acceleration.
+    # - Displacement- and velocity-based Newmark histories.
+    # - Physical fluid velocity gradient.
+# **Important:** The solution has not yet been projected onto the new finite-element basis.
+#_____________________________________________________________________________________________________________________________________________
+
+    # 10. Reconstruct the fluid solution and Newmark histories on the new mesh
+    # The reconstruction must also satisfy three requirements:
+    #     Preserve the physical fluid solution as accurately as possible.
+    #     Maintain compatibility between the fluid mesh motion and the solid interface.
+    #     Reconstruct consistent Newmark histories so that time integration can continue without an artificial jump.
+
     R_scale   = float(domain.cylinder_radius / 'm')
     u_scale   = float(fluid.velocity / 'm/s')
     p_scale_v = float(fluid.viscosity * fluid.velocity / domain.cylinder_radius / 'Pa')
 
+    #L2 projection of a vector field
+    #This is an unconstrained projection. It approximates the transferred field but does not independently impose boundary conditions or incompressibility.
     def _project_vector(target_x, target_y, scale):
         ns_p = Namespace()
         ns_p.fproj = new_topo['fluid'].field('fproj', btype='std', degree=2, shape=(2,))
         ns_p.ftarget = new_dof_sample.asfunction(numpy.stack([target_x / scale, target_y / scale], axis=1).astype(float))
-
+        #minimizing f_proj - f_target
         sqr = new_dof_sample.integral(((ns_p.fproj - ns_p.ftarget) ** 2).sum(-1))
-
         return System(sqr, trial='fproj').solve(constrain={}, arguments={})['fproj']
 
-    # Synchronize current mesh state at remeshing
-
+    # Constrained projection of a mesh-related field. This function is subsequently used to reconstruct mesh acceleration and acceleration-history fields.
     def _project_mesh_state(tx, ty, interface_target):
         ns_h = Namespace()
         ns_h.h = function.replace_arguments(new_ns.dm, [('dm', 'h')])
         ns_h.htarget = new_dof_sample.asfunction(numpy.stack([tx / R_scale, ty / R_scale], axis=1).astype(float)) * domain.cylinder_radius
 
         sqr_gamma = zipped_traction.integral(_dot2(ns_h.h - interface_target, ns_h.h - interface_target) * new_ns.dS) / domain.cylinder_radius**3
-
-        hcons = System(sqr_gamma, trial='h').solve_constraints(
-            droptol=1e-9,
-            constrain={'h': dm_outer_cons.copy()},
-            arguments=args,
-        )
-
+        hcons = System(sqr_gamma, trial='h').solve_constraints(droptol=1e-9, constrain={'h': dm_outer_cons.copy()}, arguments=args)
         sqr_bulk = new_dof_sample.integral((((ns_h.h - ns_h.htarget) / domain.cylinder_radius)**2).sum(-1))
-
         return System(sqr_bulk, trial='h').solve(constrain=hcons, arguments={})['h']
+
+    # Nonlinear mesh-extension solve. It determines the interior field by solving an artificial mesh-extension equilibrium equation.
     def _extend_mesh_state(interface_target):
-            ns_h = Namespace()
-            ns_h.h = function.replace_arguments(new_ns.dm, [('dm', 'h')])
-            ns_h.htest = function.replace_arguments(new_ns.dm, 'dm:htest') / (domain.cylinder_radius**2 * Pressure('1Pa'))
-            ns_h.xfnew = new_geom
-            ns_h.define_for('xfnew', gradient='∇ref', jacobians=('dVref', 'dSref'))
+        ns_h = Namespace()
+        ns_h.h = function.replace_arguments(new_ns.dm, [('dm', 'h')])
+        ns_h.htest = function.replace_arguments(new_ns.dm, 'dm:htest') / (domain.cylinder_radius**2 * Pressure('1Pa'))
+        ns_h.xfnew = new_geom
+        ns_h.define_for('xfnew', gradient='∇ref', jacobians=('dVref', 'dSref'))
     
-            ns_h.xh_i = 'xfnew_i + h_i'
-            ns_h.Fh_ij = '∇ref_j(xh_i)'
-            ns_h.Fhinv = numpy.linalg.inv(ns_h.Fh)
-            ns_h.Ph_ij = '2 (Fh_ij - Fhinv_ji)'
+        ns_h.xh_i = 'xfnew_i + h_i'
+        ns_h.Fh_ij = '∇ref_j(xh_i)'
+        ns_h.Fhinv = numpy.linalg.inv(ns_h.Fh)
+        ns_h.Ph_ij = '2 (Fh_ij - Fhinv_ji)'
     
-            sqr_gamma = zipped_traction.integral(
-                _dot2(ns_h.h - interface_target, ns_h.h - interface_target) * new_ns.dS
-            ) / domain.cylinder_radius**3
-    
-            hcons = System(sqr_gamma, trial='h').solve_constraints(
-                droptol=1e-9, constrain={'h': dm_outer_cons.copy()}, arguments=args)
-    
-            res_h = Pressure('1Pa') * new_topo['fluid'].integral(
-                '∇ref_j(htest_i) Ph_ij dVref' @ ns_h, degree=4)
-    
-            return System(res_h, trial='h', test='htest').solve(
-                constrain=hcons, arguments={'h': numpy.nan_to_num(hcons['h'], nan=0.)}, tol=1e-12)['h']
+        sqr_gamma = zipped_traction.integral(_dot2(ns_h.h - interface_target, ns_h.h - interface_target) * new_ns.dS) / domain.cylinder_radius**3
+        hcons = System(sqr_gamma, trial='h').solve_constraints(droptol=1e-9, constrain={'h': dm_outer_cons.copy()}, arguments=args)
+        res_h = Pressure('1Pa') * new_topo['fluid'].integral('∇ref_j(htest_i) Ph_ij dVref' @ ns_h, degree=4)
+        return System(res_h, trial='h', test='htest').solve(constrain=hcons, arguments={'h': numpy.nan_to_num(hcons['h'], nan=0.)}, tol=1e-12)['h']
 
+    #Project the physical fluid velocity transferred from the old mesh:
     uf_proj_dofs = _project_vector(new_uf_x, new_uf_y, u_scale)
+    #At this stage, the velocity is only an L2 approximation of the old physical fluid velocity. It has not yet undergone the divergence-constrained and gradient-preserving correction introduced later.
 
-    V_mesh = _extend_mesh_state(new_ns.v * dynamic.timestep)
+    #Reconstruct the fluid mesh velocity
+    V_mesh = _extend_mesh_state(new_ns.v * dynamic.timestep) #(new_ns.v represents the solid velocity obtained from the displacement-based Newmark scheme.)
+    #The mesh velocity is reconstructed independently, using the current solid velocity at the interface and the artificial mesh-extension equation in the interior.
 
-    urel_new_dofs = (
-        uf_proj_dofs - V_mesh * R_scale / (dt * u_scale)
-    )
+    #Recover the relative fluid velocity
+    urel_new_dofs = (uf_proj_dofs - V_mesh * R_scale / (dt * u_scale)) 
+    #This is not yet the final reconstructed relative velocity. A further constrained projection is performed to improve the velocity gradients and incompressibility.
 
     # Gao's ramp is complete at the first remesh (0.201 s > 0.1 s).
     u_fixed = numpy.isfinite(new_ucons)
     urel_new_dofs[u_fixed] = new_ucons[u_fixed]
 
     ns_proj = Namespace()
-
     ns_proj.x = new_geom / domain.cylinder_radius
     ns_proj.define_for('x', gradient='∇', normal='n', jacobians=('dV', 'dS'))
-    
     ns_proj.uproj = new_topo['fluid'].field('uproj', btype='std', degree=2, shape=(2,))
     ns_proj.uprojtest = function.replace_arguments(ns_proj.uproj, 'uproj:uprojtest')
-
     ns_proj.qproj = new_topo['fluid'].field('qproj', btype='std', degree=1)
     ns_proj.qprojtest = function.replace_arguments(ns_proj.qproj, 'qproj:qprojtest')
-    
     ns_proj.vm = (function.replace_arguments(new_ns.dm, [('dm', 'Vproj')]) / dynamic.timestep / fluid.velocity)
     ns_proj.uf_i = 'vm_i + uproj_i'
     ns_proj.utarget = new_dof_sample.asfunction(numpy.stack([new_uf_x / u_scale, new_uf_y / u_scale], axis=1).astype(float))
@@ -971,13 +948,7 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     new_cyl_sample = new_topo['fluid'].boundary['cylinder'].sample('gauss', 4)
     new_cyl_x_m = numpy.asarray(new_cyl_sample.eval(new_geom) / 'm', dtype=float)
     
-    old_cyl_located = old_topo_fluid.boundary['cylinder'].locate(
-        x_field / Length('1m'),
-        new_cyl_x_m,
-        tol=transfer_tol_m,
-        arguments=args,
-        skip_missing=False,
-    )
+    old_cyl_located = old_topo_fluid.boundary['cylinder'].locate(x_field / Length('1m'), new_cyl_x_m, tol=transfer_tol_m, arguments=args, skip_missing=False)
     
     ns_old_cyl = Namespace()
     ns_old_cyl.x = x_field
@@ -987,7 +958,6 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     old_graduf_cyl = numpy.asarray(function.eval(old_cyl_located.bind('∇_j(uf_i)' @ ns_old_cyl), arguments=args) / '1/s', dtype=float)
     
     ns_proj.gtargetcyl = new_cyl_sample.asfunction((old_graduf_cyl * R_scale / u_scale).astype(float))
-    
     ns_proj.wH1 = 0.5**2
     ns_proj.wGamma = 0.1
     
@@ -1003,13 +973,8 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
         '(((∇_k(uf_i) + ∇_i(uf_k)) n_k) '
         '- ((gtargetcyl_ik + gtargetcyl_ki) n_k))' @ ns_proj)
     
-    res_proj += new_topo['fluid'].integral(
-        'qproj ∇_i(uprojtest_i) dV' @ ns_proj,
-        degree=4)
-    
-    res_proj += new_topo['fluid'].integral(
-        'qprojtest ∇_i(uf_i) dV' @ ns_proj,
-        degree=4)
+    res_proj += new_topo['fluid'].integral('qproj ∇_i(uprojtest_i) dV' @ ns_proj, degree=4)
+    res_proj += new_topo['fluid'].integral('qprojtest ∇_i(uf_i) dV' @ ns_proj, degree=4)
     
     uproj_cons = numpy.full_like(new_ucons, numpy.nan)
     uproj_cons[u_fixed] = urel_new_dofs[u_fixed]
