@@ -2026,7 +2026,7 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
     # Track whether we have remeshed (changes which Newmark keys exist)
     has_remeshed = False
 
-    particle_csv = Path('mesh_med.csv')
+    particle_csv = Path('mesh_coarse.csv')
     particle_csv.write_text('time_s,time_nd,step,L_particle,B_particle,deformation_index,omega,theta_rad,theta_over_pi\n')
     epsdot_s = float((fluid.velocity / (2 * domain.cylinder_radius)) / '1/s')
 
