@@ -235,7 +235,6 @@ Field[2].F = Sprintf(
 Background Field = 2;
 
 // Gradually increase mesh size away from particle
-Field[2] = Threshold;
 Field[2].InField = 1;
 
 Field[2].SizeMin = lc_particle;
