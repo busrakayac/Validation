@@ -1976,7 +1976,7 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
     # ------------------------------------------------------------------
     # Trigger remeshing when the minimum Jacobian of the fluid mesh drops below this threshold (relative to a perfect element = 1).
 
-    enable_remeshing = False
+    enable_remeshing = True
     remesh_J_threshold = 0.6
     predictor_J_safety = 0.4
     remesh_Jmax_threshold = 2.0
