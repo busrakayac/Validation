@@ -234,21 +234,6 @@ Field[2].F = Sprintf(
 
 Background Field = 2;
 
-// Gradually increase mesh size away from particle
-Field[2].InField = 1;
-
-Field[2].SizeMin = lc_particle;
-Field[2].SizeMax = lc_far;
-
-// Keep finest resolution near particle
-Field[2].DistMin = 0;
-
-// Reach far-field resolution at approximately four radii
-Field[2].DistMax = 3.0*a0;
-
-Background Field = 2;
-
-
 // ============================================================
 // 7. MESH QUALITY SETTINGS
 // ============================================================
