@@ -1447,26 +1447,26 @@ def remesh_diagnostics(
     # ------------------------------------------------------------------
     # Plot 1: mesh comparison (old deformed ALE vs new clean mesh)
     # ------------------------------------------------------------------
-    # with export.mplfigure(f'remesh_{remesh_count:03d}_mesh_t{current_t_s:.6f}s.jpg', dpi=200) as fig:
+    with export.mplfigure(f'remesh_{remesh_count:03d}_mesh_t{current_t_s:.6f}s.jpg', dpi=200) as fig:
 
-    #     ax1 = fig.add_subplot(121, title=f'ALE mesh before remesh\nJf_min={Jf_old.min():.3f}')
-    #     export.triplot(ax1, old_x_m, hull=old_fluid_bezier.hull, linewidth=0.25)
-    #     closed = numpy.vstack([xb_solid_m, xb_solid_m[:1]])
-    #     ax1.plot(closed[:, 0], closed[:, 1], 'r-', linewidth=1.5, label='solid boundary')
-    #     ax1.set_aspect('equal')
-    #     ax1.set_xlim(-L_plot, L_plot)
-    #     ax1.set_ylim(-L_plot, L_plot)
-    #     ax1.legend(fontsize=6)
+         ax1 = fig.add_subplot(121, title=f'ALE mesh before remesh\nJf_min={Jf_old.min():.3f}')
+         export.triplot(ax1, old_x_m, hull=old_fluid_bezier.hull, linewidth=0.25)
+         closed = numpy.vstack([xb_solid_m, xb_solid_m[:1]])
+         ax1.plot(closed[:, 0], closed[:, 1], 'r-', linewidth=1.5, label='solid boundary')
+         ax1.set_aspect('equal')
+         ax1.set_xlim(-L_plot, L_plot)
+         ax1.set_ylim(-L_plot, L_plot)
+         ax1.legend(fontsize=6)
 
-    #     ax2 = fig.add_subplot(122, title=f'New fluid mesh after remesh\nJf_min={Jf_new.min():.3f}')
-    #     export.triplot(ax2, new_x_m, hull=new_fluid_bezier.hull, linewidth=0.25)
-    #     ax2.plot(closed[:, 0], closed[:, 1], 'r-', linewidth=1.5, label='solid boundary')
-    #     ax2.set_aspect('equal')
-    #     ax2.set_xlim(-L_plot, L_plot)
-    #     ax2.set_ylim(-L_plot, L_plot)
-    #     ax2.legend(fontsize=6)
+         ax2 = fig.add_subplot(122, title=f'New fluid mesh after remesh\nJf_min={Jf_new.min():.3f}')
+         export.triplot(ax2, new_x_m, hull=new_fluid_bezier.hull, linewidth=0.25)
+         ax2.plot(closed[:, 0], closed[:, 1], 'r-', linewidth=1.5, label='solid boundary')
+         ax2.set_aspect('equal')
+         ax2.set_xlim(-L_plot, L_plot)
+         ax2.set_ylim(-L_plot, L_plot)
+         ax2.legend(fontsize=6)
 
-    #     fig.suptitle(f'Remesh #{remesh_count}  t={current_t_s:.4e} s', fontsize=9)
+         fig.suptitle(f'Remesh #{remesh_count}  t={current_t_s:.4e} s', fontsize=9)
 
     # ------------------------------------------------------------------
     # Plot 2: velocity magnitude comparison (old vs new mesh)
