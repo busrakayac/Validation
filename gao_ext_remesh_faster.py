@@ -1182,7 +1182,7 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     ru_up = numpy.asarray(function.eval(ru_expr, arguments=up_corrected_args)).reshape(-1)[free_u]
     rp_up = numpy.asarray(function.eval(rp_expr, arguments=up_corrected_args)).reshape(-1)[free_p]
     
-    du_up_g = function.eval(dof_sample.bind(new_ns.urel), arguments={'u': up_corr_solution['u'] - urel_proj_dofs})
+    du_up_g = function.eval(new_dof_sample.bind(new_ns.urel), arguments={'u': up_corr_solution['u'] - urel_proj_dofs})
     du_up = numpy.linalg.norm(numpy.asarray(du_up_g / 'm/s'), axis=-1)
     dp_up_g = function.eval(new_dof_sample.bind(new_ns.p), arguments={'p': up_corr_solution['p'] - projected_args['p']})
     dp_up = numpy.abs(numpy.asarray(dp_up_g / 'Pa'))
