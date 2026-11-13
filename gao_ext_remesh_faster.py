@@ -1146,6 +1146,7 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     
     ru_expr = res_fluid_mom.derivative('utest')
     rp_expr = res_fluid_inc.derivative('ptest')
+    ru_coupled_expr = (res_fluid_mom + res_fluid_lamf).derivative('utest')
     
     free_u = ~numpy.isfinite(new_cons['u']).reshape(-1)
     free_p = ~numpy.isfinite(new_cons['p']).reshape(-1)
@@ -1168,7 +1169,7 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
         f'max|du|={du_proj.max():.6e} m/s'
     )
 
-    # Diagnostic only: can (u,p) restore momentum + incompressibility?
+    # Coupled restart correction: enforce fluid momentum, incompressibility, and the weak no-slip condition u_rel = 0 simultaneously by solving for (u, p, lamf).
     up_corr_solution = System(
         res_fluid_mom + res_fluid_inc + res_fluid_lamf + res_lamf_constraint,
         trial=['u', 'p', 'lamf'],
@@ -1181,7 +1182,13 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     up_corrected_args['p'] = up_corr_solution['p']
     up_corrected_args['lamf'] = up_corr_solution['lamf']
     
-    ru_up = numpy.asarray(function.eval(ru_expr, arguments=up_corrected_args)).reshape(-1)[free_u]
+    # Measure the relative-acceleration change introduced by the coupled restart correction while keeping the transferred history fixed.
+    arel_before = function.eval(new_dof_sample.bind(new_ns.arel), arguments=projected_args)
+    arel_after  = function.eval(new_dof_sample.bind(new_ns.arel), arguments=up_corrected_args)    
+    darel = numpy.linalg.norm(numpy.asarray((arel_after-arel_before)/'m/s2'), axis=-1)
+    log.info(f'[RESTART ACCELERATION CHANGE] max={darel.max():.6e} m/s2, RMS={numpy.sqrt(numpy.mean(darel**2)):.6e} m/s2')
+    
+    ru_up = numpy.asarray(function.eval(ru_coupled_expr, arguments=up_corrected_args)).reshape(-1)[free_u]
     rp_up = numpy.asarray(function.eval(rp_expr, arguments=up_corrected_args)).reshape(-1)[free_p]
     
     du_up_g = function.eval(new_dof_sample.bind(new_ns.urel), arguments={'u': up_corr_solution['u'] - urel_proj_dofs})
@@ -1196,8 +1203,8 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
         f'max|du|={du_up.max():.6e} m/s, '
         f'max|dp|={dp_up.max():.6e} Pa')
 
-    # Coupled (u,p) correction while preserving the transferred
-    # Newmark relative acceleration
+    # Keep the transferred Newmark history unchanged.
+    # The corrected current velocity is allowed to modify the relative acceleration so that the corrected state remains dynamically consistent.
     du_up_dofs = up_corr_solution['u'] - urel_proj_dofs
     
     u0_up_consistent = u0_proj.copy()
@@ -1222,7 +1229,6 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
         f'RMS|darel|={numpy.sqrt(numpy.mean(darel_up_hist**2)):.6e} m/s2'
     )
 
-    
     # Exact change in relative acceleration caused by the coupled (u,p) correction
     arel_up_g = function.eval(new_dof_sample.bind(new_ns.arel), arguments=up_corrected_args)
     darel_up = numpy.linalg.norm(numpy.asarray((arel_up_g - arel_proj_g) / 'm/s2'), axis=-1)
@@ -1237,9 +1243,7 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
             fluid_traction_located.bind(ns_f.tpres),
             fluid_traction_located.bind(ns_f.tvisc),
             fluid_traction_located.bind(ns_f.traction),
-        ],
-        arguments=new_args,
-    )
+        ], arguments=new_args)
     
     _traction_error('pressure POST-PROJ', old_pres, numpy.asarray(tproj_pres / 'Pa', dtype=float))
     _traction_error('viscous POST-PROJ', old_visc, numpy.asarray(tproj_visc / 'Pa', dtype=float))
@@ -1276,10 +1280,6 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     log.info(f'[INTERFACE VELOCITY] ||u_f-v_s|| max={uf_vs.max():.6e} m/s, rel={uf_vs.max()/vs_ref:.6e}')
 
     log.info('Fluid solution transferred to new mesh; mesh Newmark history reconstructed consistently.')
-
-    # ------------------------------------------------------------------
-    # TRANSFER CHECK: current mesh velocity
-    # ------------------------------------------------------------------
 
     if transfer_via_locate:
         old_vm_check = numpy.asarray(function.eval(old_located.bind(v_field), arguments=args) / 'm/s')
