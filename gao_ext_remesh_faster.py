@@ -1170,14 +1170,16 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
 
     # Diagnostic only: can (u,p) restore momentum + incompressibility?
     up_corr_solution = System(
-        res_fluid_mom + res_fluid_inc,
-        trial=['u', 'p'],
-        test=['utest', 'ptest']).solve(
-        constrain={'u': new_ucons, 'p': new_cons['p']}, arguments=projected_args, tol=1e-12)
+        res_fluid_mom + res_fluid_inc + res_fluid_lamf + res_lamf_constraint,
+        trial=['u', 'p', 'lamf'],
+        test=['utest', 'ptest', 'lamftest']).solve(constrain={
+            'u': new_ucons,
+            'p': new_cons['p']}, arguments=projected_args, tol=1e-12)
     
     up_corrected_args = dict(projected_args)
     up_corrected_args['u'] = up_corr_solution['u']
     up_corrected_args['p'] = up_corr_solution['p']
+    up_corrected_args['lamf'] = up_corr_solution['lamf']
     
     ru_up = numpy.asarray(function.eval(ru_expr, arguments=up_corrected_args)).reshape(-1)[free_u]
     rp_up = numpy.asarray(function.eval(rp_expr, arguments=up_corrected_args)).reshape(-1)[free_p]
@@ -1198,7 +1200,7 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     # Newmark relative acceleration
     du_up_dofs = up_corr_solution['u'] - urel_proj_dofs
     
-    u0_up_consistent = u0_proj + du_up_dofs
+    u0_up_consistent = u0_proj.copy()
     
     up_hist_args = dict(projected_args)
     up_hist_args['u']  = up_corr_solution['u']
@@ -1227,6 +1229,7 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     
     new_args['u']  = up_corr_solution['u']
     new_args['p']  = up_corr_solution['p']
+    new_args['lamf'] = up_corr_solution['lamf']
     new_args['u0'] = u0_up_consistent
 
     tproj_pres, tproj_visc, tproj_tot = function.eval(
