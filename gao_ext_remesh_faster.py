@@ -1187,7 +1187,7 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
 
     #Measure the change in relative acceleration
     #The correction changes the current relative velocity u, but does not modify its Newmark history u0.
-    #Therefore, the calculated relative acceleration also changes: darel evaluates the magnitude of the acceleration change at each fluid quadrature point
+    #Therefore, the calculated relative acceleration also changes: "darel" evaluates the magnitude of the acceleration change at each fluid quadrature point
     arel_before = function.eval(new_dof_sample.bind(new_ns.arel), arguments=projected_args)
     arel_after  = function.eval(new_dof_sample.bind(new_ns.arel), arguments=up_corrected_args)    
     darel = numpy.linalg.norm(numpy.asarray((arel_after-arel_before)/'m/s2'), axis=-1)
@@ -1196,7 +1196,9 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     #Check whether the corrected fluid equations are satisfied, when corrected solution is used
     ru_up = numpy.asarray(function.eval(ru_coupled_expr, arguments=up_corrected_args)).reshape(-1)[free_u]
     rp_up = numpy.asarray(function.eval(rp_expr, arguments=up_corrected_args)).reshape(-1)[free_p]
-
+    ru_bulk_up = numpy.asarray(function.eval(ru_expr, arguments=up_corrected_args)).reshape(-1)[free_u]
+    log.info(f'[FLUID REACTION BALANCE] ||Ru_bulk||={numpy.linalg.norm(ru_bulk_up):.6e}, ||Ru_coupled||={numpy.linalg.norm(ru_up):.6e}')
+    
     #Measure how much the velocity and pressure were corrected
     du_up_g = function.eval(new_dof_sample.bind(new_ns.urel), arguments={'u': up_corr_solution['u'] - urel_proj_dofs})
     du_up = numpy.linalg.norm(numpy.asarray(du_up_g / 'm/s'), axis=-1)
@@ -1209,56 +1211,37 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
         f'Rp={numpy.linalg.norm(rp_up):.6e}, ' #Remaining incompressibility residual
         f'max|du|={du_up.max():.6e} m/s, '     #Maximum velocity change required by the correction
         f'max|dp|={dp_up.max():.6e} Pa')       #Maximum pressure change required by the correction
-
-    # Keep the transferred Newmark history unchanged.
-    # The corrected current velocity is allowed to modify the relative acceleration so that the corrected state remains dynamically consistent.
-    du_up_dofs = up_corr_solution['u'] - urel_proj_dofs
     
-    u0_up_consistent = u0_proj.copy()
-    
-    up_hist_args = dict(projected_args)
-    up_hist_args['u']  = up_corr_solution['u']
-    up_hist_args['p']  = up_corr_solution['p']
-    up_hist_args['u0'] = u0_up_consistent
-
-    ru_up_hist = numpy.asarray(function.eval(ru_expr, arguments=up_hist_args)).reshape(-1)[free_u]
-    rp_up_hist = numpy.asarray(function.eval(rp_expr, arguments=up_hist_args)).reshape(-1)[free_p]
-    arel_proj_g = function.eval(new_dof_sample.bind(new_ns.arel), arguments=projected_args)
-    arel_up_hist_g = function.eval(new_dof_sample.bind(new_ns.arel), arguments=up_hist_args)
-    
-    darel_up_hist = numpy.linalg.norm(numpy.asarray((arel_up_hist_g - arel_proj_g) / 'm/s2'), axis=-1)
-    
-    log.info(
-        f'[COUPLED-UP CONSISTENT-HISTORY] '
-        f'Ru={numpy.linalg.norm(ru_up_hist):.6e}, '
-        f'Rp={numpy.linalg.norm(rp_up_hist):.6e}, '
-        f'max|darel|={darel_up_hist.max():.6e} m/s2, '
-        f'RMS|darel|={numpy.sqrt(numpy.mean(darel_up_hist**2)):.6e} m/s2')
-
-    # Exact change in relative acceleration caused by the coupled (u,p) correction
-    arel_up_g = function.eval(new_dof_sample.bind(new_ns.arel), arguments=up_corrected_args)
-    darel_up = numpy.linalg.norm(numpy.asarray((arel_up_g - arel_proj_g) / 'm/s2'), axis=-1)
-    
+    #Update the restart state with the corrected solution
     new_args['u']  = up_corr_solution['u']
     new_args['p']  = up_corr_solution['p']
     new_args['lamf'] = up_corr_solution['lamf']
-    new_args['u0'] = u0_up_consistent
+    new_args['u0'] = u0_proj #The correction changes the current relative velocity, but retains its reconstructed history.
 
+    #Evaluate the fluid traction after the correction
     tproj_pres, tproj_visc, tproj_tot = function.eval(
         [fluid_traction_located.bind(ns_f.tpres),
          fluid_traction_located.bind(ns_f.tvisc),
          fluid_traction_located.bind(ns_f.traction)], arguments=new_args)
-    
+
+    #compare these corrected tractions with those recorded before remeshing:
     _traction_error('pressure POST-PROJ', old_pres, numpy.asarray(tproj_pres / 'Pa', dtype=float))
     _traction_error('viscous POST-PROJ', old_visc, numpy.asarray(tproj_visc / 'Pa', dtype=float))
     _traction_error('total POST-PROJ', old_tot, numpy.asarray(tproj_tot / 'Pa', dtype=float))
 
+    #Compare the corrected physical fluid velocity with the transferred velocity
+    #This line replaces the argument name u with ufcheck, creating an auxiliary field with the same P2 basis and velocity scaling.
     uf_target_field = function.replace_arguments(new_ns.urel, [('u', 'ufcheck')])
+    #This evaluates two fields at the same new fluid quadrature points.
     uf_target_g, uf_new_g = function.eval([new_dof_sample.bind(uf_target_field), new_dof_sample.bind(new_ns.u)], arguments=dict(new_args, ufcheck=uf_proj_dofs))
 
+    #These lines convert the evaluated velocities into NumPy arrays in m/s.
     uf_target = numpy.asarray(uf_target_g / 'm/s', dtype=float)
     uf_new = numpy.asarray(uf_new_g / 'm/s', dtype=float)
-    duf = numpy.linalg.norm(uf_new - uf_target, axis=-1)
+
+    duf = numpy.linalg.norm(uf_new - uf_target, axis=-1) #calculates the velocity difference at each quadrature point
+
+    #These are the RMS magnitude of the reference velocity and the RMS transfer error.
     uf_ref = numpy.sqrt(numpy.mean(numpy.linalg.norm(uf_target, axis=-1)**2))
     duf_rms = numpy.sqrt(numpy.mean(duf**2))
 
@@ -1267,29 +1250,28 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
         f'max={duf.max():.6e} m/s, '
         f'RMS={duf_rms:.6e} m/s, '
         f'relRMS={duf_rms/max(uf_ref, 1e-30):.6e}')
-
+    
+    #Evaluate the velocities at the particle interface
     vm_g, urel_g, uf_g, vs_g = function.eval(
         [zipped_traction.bind(new_ns.vm), zipped_traction.bind(new_ns.urel),
         zipped_traction.bind(new_ns.u), zipped_traction.bind(new_ns.v)],
         arguments=new_args)
-
+    
+    #Measure violations of the interface conditions
     vm_vs = numpy.linalg.norm(numpy.asarray((vm_g - vs_g) / 'm/s'), axis=-1)
     urel_mag = numpy.linalg.norm(numpy.asarray(urel_g / 'm/s'), axis=-1)
     uf_vs = numpy.linalg.norm(numpy.asarray((uf_g - vs_g) / 'm/s'), axis=-1)
-    vs_ref = max(numpy.linalg.norm(numpy.asarray(vs_g / 'm/s'), axis=-1).max(), 1e-30)
+    vs_ref = max(numpy.linalg.norm(numpy.asarray(vs_g / 'm/s'), axis=-1).max(), 1e-30) #Normalize and report the interface errors
 
+    #These diagnostics tell us whether the reconstructed mesh velocity and corrected fluid velocity satisfy the intended interface kinematics.
     log.info(f'[INTERFACE VELOCITY] ||v_m-v_s|| max={vm_vs.max():.6e} m/s, rel={vm_vs.max()/vs_ref:.6e}')
     log.info(f'[INTERFACE VELOCITY] ||u_rel||   max={urel_mag.max():.6e} m/s, rel={urel_mag.max()/vs_ref:.6e}')
     log.info(f'[INTERFACE VELOCITY] ||u_f-v_s|| max={uf_vs.max():.6e} m/s, rel={uf_vs.max()/vs_ref:.6e}')
-
     log.info('Fluid solution transferred to new mesh; mesh Newmark history reconstructed consistently.')
 
-    if transfer_via_locate:
-        old_vm_check = numpy.asarray(function.eval(old_located.bind(v_field), arguments=args) / 'm/s')
-    else:
-        old_vm_check = numpy.column_stack((new_vm_x, new_vm_y))
-
-    new_vm_check = numpy.asarray(function.eval(new_dof_sample.bind(new_ns.vm), arguments=new_args) / 'm/s')
+    #Compare mesh velocity before and after remeshing (whole domain rather than the interface)
+    old_vm_check = numpy.column_stack((new_vm_x, new_vm_y)) #the old mesh velocity evaluated at the new mesh quadrature points
+    new_vm_check = numpy.asarray(function.eval(new_dof_sample.bind(new_ns.vm), arguments=new_args) / 'm/s') #the newly reconstructed mesh velocity at those same quadrature points:
 
     abs_err = numpy.linalg.norm(new_vm_check - old_vm_check, axis=1)
     old_mag = numpy.linalg.norm(old_vm_check, axis=1)
@@ -1299,69 +1281,69 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     rel_rms = rms_err / max(rms_old, 1e-30)
 
     log.info(f'[TRANSFER CHECK] v_mesh: max={abs_err.max():.6e} m/s, RMS={rms_err:.6e} m/s, relRMS={rel_rms:.6e}')
+    #[INTERFACE VELOCITY] checks whether the fluid, mesh, and solid move consistently at the particle boundary. These conditions are physically important.
+    #[TRANSFER CHECK] v_mesh measures how much the mesh motion changed in the fluid interior. This is useful for assessing the remeshing reconstruction, but a nonzero difference is not necessarily an error.
+#_____________________________________________________________________________________________________________________________________________
 
-    
-    # ------------------------------------------------------------------
-    # 13. Verification checks
-    # ------------------------------------------------------------------
+    # 13. VERIFICATION
     from scipy.spatial import cKDTree
-
+    #Check whether the new fluid mesh matches the solid boundary
     new_fluid_bbezier_check = new_topo['fluid'].boundary['cylinder'].sample('bezier', 3)
-    xb_fluid_inner = numpy.asarray(new_fluid_bbezier_check.eval(new_geom) / 'm', dtype=float)
-    xb_solid_outer = numpy.asarray(xb_current_m)
+    xb_fluid_inner = numpy.asarray(new_fluid_bbezier_check.eval(new_geom) / 'm', dtype=float) #points on the inner boundary of the newly generated fluid mesh.
+    xb_solid_outer = numpy.asarray(xb_current_m) #points on the current outer boundary of the solid particle.
 
+    #For every solid-boundary point, the code finds the nearest fluid-boundary point and calculates their distance
     tree = cKDTree(xb_fluid_inner)
     dists, _ = tree.query(xb_solid_outer)
     log.info(f'[REMESH CHECK] Interface gap max : {dists.max():.3e} m')
     log.info(f'[REMESH CHECK] Interface gap mean: {dists.mean():.3e} m')
 
+    #Check that the new mesh displacement is zero
     dm_max = numpy.abs(new_args['dm']).max()
-    log.info(f'[REMESH CHECK] max |dm| after reset: {dm_max:.3e}  (expect ~0)')
+    log.info(f'[REMESH CHECK] max |dm| after reset: {dm_max:.3e}  (expect ~0)') #This line checks that the maximum absolute displacement coefficient is approximately zero, earlier we set dm=0
     log.info(f'[REMESH CHECK] max |v_m^new| : {numpy.abs(vm_new_dofs_ms).max():.3e} m/s  (need not be 0)')
 
-    # Kinematic interface consistency: the mesh must move with the solid,
-    # i.e. v_m = v_s and a_m = a_s on the cylinder.  The bulk interpolation
-    # used for the dm Newmark history does NOT guarantee this at the new
-    # interface dofs, so we measure it explicitly.  Large values here mean
-    # the interface histories should be taken from the solid rather than
-    # from bulk interpolation.
+    #Check mesh–solid velocity and acceleration compatibility
     try:
-        vm_gamma, am_gamma, vs_gamma, as_gamma = function.eval(
-            [zipped_traction.bind(new_ns.vm), zipped_traction.bind(new_ns.am),
-             zipped_traction.bind(new_ns.v),  zipped_traction.bind(new_ns.a)],
-            arguments=new_args,
-        )
-        dv = numpy.linalg.norm(numpy.asarray((vm_gamma - vs_gamma) / 'm/s'), axis=-1)
+        am_gamma, as_gamma = function.eval(
+            [zipped_traction.bind(new_ns.am), zipped_traction.bind(new_ns.a)],
+            arguments=new_args)
+        
+        dv = vm_vs  # Already calculated in Block 12
         da = numpy.linalg.norm(numpy.asarray((am_gamma - as_gamma) / 'm/s2'), axis=-1)
-        vs_ref = max(numpy.linalg.norm(numpy.asarray(vs_gamma / 'm/s'), axis=-1).max(), 1e-30)
         as_ref = max(numpy.linalg.norm(numpy.asarray(as_gamma / 'm/s2'), axis=-1).max(), 1e-30)
+        
         log.info(f'[REMESH CHECK] ||v_m - v_s||_Γ max: {dv.max():.3e} m/s   '
                  f'(rel {dv.max()/vs_ref:.3e})')
         log.info(f'[REMESH CHECK] ||a_m - a_s||_Γ max: {da.max():.3e} m/s2  '
                  f'(rel {da.max()/as_ref:.3e})')
+        
         if dv.max() > 1e-3 * vs_ref:
             log.info('[REMESH WARNING] interface mesh/solid velocity mismatch exceeds diagnostic tolerance.')
+            
         interface_dv = float(dv.max()); interface_da = float(da.max())
+        
     except Exception as ex:
         log.info(f'[REMESH CHECK] interface kinematics check skipped: {ex}')
         interface_dv = interface_da = float('nan')
 
     log.info('=== REMESHING COMPLETE ===')
-
-    # ------------------------------------------------------------------
+#__________________________________________________________________________________________REMESHING COMPLETE________________________________________________________________________________________________
+    
     # 14. Rebuild Bezier samplers and diagnostic quantities
-    # ------------------------------------------------------------------
     new_fluid_bezier = new_topo['fluid'].sample('bezier', 3)
 
-    new_x_bz  = function.factor(new_fluid_bezier.bind(ns_f.xm))
-    new_u_bz  = function.factor(new_fluid_bezier.bind(new_ns.u))
-    new_p_bz  = function.factor(new_fluid_bezier.bind(new_ns.p))
-    new_Jfluid_bz = new_fluid_bezier.bind(ns_m.Jm)
+    new_x_bz  = function.factor(new_fluid_bezier.bind(ns_f.xm)) #For plotting the deformed mesh
+    new_u_bz  = function.factor(new_fluid_bezier.bind(new_ns.u)) #velocity vis.
+    new_p_bz  = function.factor(new_fluid_bezier.bind(new_ns.p)) #pressure vis. 
+    new_Jfluid_bz = new_fluid_bezier.bind(ns_m.Jm) #monitoring mesh distortion
+#_____________________________________________________________________________________________________________
 
-    # ------------------------------------------------------------------
     # 15. Updated fluid_state for the NEXT remesh (or for per-step use)
-    # ------------------------------------------------------------------
+
+    #This dictionary stores the information needed to work with the new fluid mesh, rather than the previous one.
     new_fluid_state = dict(
+        #Mesh and field definitions:
         topo_fluid = new_topo['fluid'],
         geom_bare  = new_geom_bare,
         x_field    = ns_f.xm,
@@ -1370,76 +1352,52 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
         urel_field = new_ns.urel,
         arel_field = new_ns.arel,
         p_field    = new_ns.p,
+        #Mesh displacement and Newmark variables:
         d_field    = new_ns.dm,
         d_name     = 'dm',
         a0dt2_key  = 'am0δt2',
-
-        # Ingredients for the per-timestep interface update
+        #Interface coupling information:
         dm_zipped_interface = zipped_traction,
         d_s_remesh_const_m  = d_s_remesh_const_m,
-
-        # Fixed outer-boundary constraint and interface data
         dm_outer_cons       = dm_outer_cons,
         solid_cyl_gauss     = solid_cyl_gauss,
-
+        #Fluid–solid reaction diagnostics:
         fluid_traction_field = ns_f.traction,
         solid_traction_field = new_ns.tsolid,
         reaction_Tdu           = Tdu.copy(),
         reaction_i_u_gamma     = i_u_gamma.copy(),
         reaction_i_d_gamma     = i_d_gamma.copy(),
         reaction_res_fluid_mom = res_fluid_mom,
-        reaction_res_solid_lamf = res_solid_lamf,
-
-    )
+        reaction_res_solid_lamf = res_solid_lamf)
     return (
         new_ns, new_res, new_cons, new_ucons, new_system,
-        new_fluid_bezier,
-        new_x_bz, new_u_bz, new_p_bz,
-        new_Jfluid_bz,
-        new_fluid_state,
-        new_args,
+        new_fluid_bezier, new_x_bz, new_u_bz, new_p_bz,
+        new_Jfluid_bz, new_fluid_state, new_args,
         dict(
             interface_gap_max  = float(dists.max()),
             interface_gap_mean = float(dists.mean()),
             dm_max_after_reset = float(dm_max),
             vm_new_max         = float(numpy.abs(vm_new_dofs_ms).max()),
             interface_dv       = interface_dv,
-            interface_da       = interface_da,
-        ),
-    )
+            interface_da       = interface_da))
+    #These entries are mostly finite-element field definitions, operators, and interface information, not numerical snapshots of the solution. 
+    #The current numerical coefficients are stored separately in new_args.
+#________________________________________________________________________________________________________________________________________________________________________________________
 
-def remesh_diagnostics(
-    current_t_s,
-    remesh_count,
-    Jf_old,
-    Jf_new,
-    old_fluid_bezier,
-    new_fluid_bezier,
-    xb_solid_m,
-    old_x_m,
-    new_x_m,
-    old_u_vals,
-    new_u_vals,
-    domain,
-    transfer_metrics,
-):
-    """Produce all diagnostic plots and prints at a remesh event.
-
-    Called immediately after ``remesh_fluid`` returns.  Generates:
-    - console summary of mesh quality before/after
-    - side-by-side mesh comparison plot
-    - side-by-side velocity-magnitude comparison plot
-    - zoomed interface-alignment plot
-    - transfer error metrics in the log
-    """
-
+# 16. Report remeshing diagnostics
+def remesh_diagnostics(current_t_s, remesh_count, Jf_old, Jf_new, old_fluid_bezier, new_fluid_bezier, xb_solid_m, old_x_m, new_x_m, old_u_vals, new_u_vals, domain, transfer_metrics):
+   
+    #Produce all diagnostic plots and prints at a remesh event. Called immediately after ``remesh_fluid`` returns.  
+    #Generates:
+        # - console summary of mesh quality before/after
+        # - side-by-side mesh comparison plot
+        # - side-by-side velocity-magnitude comparison plot
+        # - zoomed interface-alignment plot
+        # - transfer error metrics in the log
     from scipy.spatial import cKDTree
     L_plot = float(domain.channel_length / 'm')
 
-
-    # ------------------------------------------------------------------
     # Console summary
-    # ------------------------------------------------------------------
     log.info(f'--- Remesh #{remesh_count} at t={current_t_s:.6e} s ---')
     log.info(f'  Jf_min  before : {Jf_old.min():.4f}')
     log.info(f'  Jf_min  after  : {Jf_new.min():.4f}')
@@ -1477,8 +1435,8 @@ def remesh_diagnostics(
     # ------------------------------------------------------------------
     # Plot 2: velocity magnitude comparison (old vs new mesh)
     # ------------------------------------------------------------------
-    vmin = min(old_u_vals.min(), new_u_vals.min())
-    vmax = max(old_u_vals.max(), new_u_vals.max())
+    # vmin = min(old_u_vals.min(), new_u_vals.min())
+    # vmax = max(old_u_vals.max(), new_u_vals.max())
 
     # with export.mplfigure(f'remesh_{remesh_count:03d}_velocity_t{current_t_s:.6f}s.jpg', dpi=200) as fig:
 
@@ -1504,56 +1462,41 @@ def remesh_diagnostics(
 
     #     fig.colorbar(im2, ax=[ax1, ax2], orientation='horizontal', label='|u| [m/s]', shrink=0.6)
     #     fig.suptitle(f'Remesh #{remesh_count}  t={current_t_s:.4e} s', fontsize=9)
-
- 
+#______________________________________________________________________________________________________________________________________________________________________________________
+#______________________________________________________________________________________________________________________________________________________________________________________
+#______________________________________________________________________________________________________________________________________________________________________________________
+#Problem setup: Geometry, material properties, and time integration
 @dataclass
 class Domain:
-    '''Parameters for the domain geometry.
-
-    The default values match Table 1 of Turek and Hron [1].'''
-
     channel_length: Length = Length('0.0006m')
     cylinder_radius: Length = Length('0.00003m')
-    
     elemsize: Length = Length('0.00003m')
     coarsening: float = 2.67
 
     def generate_mesh(self):
         'Call gmsh to generate mesh and return topo, geom tuple.'''
-
         u = Length('m') # reference length for mesh generation
-
-        topo, geom = gmsh(
-            Path(__file__).parent/'ellipse_unbounded.geo',
-            dimension=2,
-            order=2,
-            numbers={
+        topo, geom = gmsh(Path(__file__).parent/'ellipse_unbounded.geo', dimension=2, order=2, numbers={
                  'channel_length': self.channel_length/u,
                  'cylinder_radius': self.cylinder_radius/u,
                  'elemsize': self.elemsize/u,
                  'coarsening': self.coarsening})
-
         bezier = topo.sample('bezier', 2)
         bezier_cylinder = topo['fluid'].boundary['cylinder'].sample('bezier', 3)
-        #A = topo.points['A'].sample('gauss', 1).eval(geom)
 
         with export.mplfigure('mesh.jpg', dpi=150) as fig:
             ax = fig.add_subplot(111)
             export.triplot(ax, bezier.eval(geom), hull=bezier.hull)
             export.triplot(ax, bezier_cylinder.eval(geom), hull=bezier_cylinder.tri, linewidth=1, linecolor='b')
-
             L = self.channel_length/u
             ax.set_xlim(-L, L)
             ax.set_ylim(-L, L)
             
- 
         return topo, geom * u
-
 
 @dataclass
 class Solid:
     '''Parameters for the solid problem.'''
-
     density: Density = Density('10kg/L')
     poisson_ratio: float = .45
     shear_modulus: Pressure = Pressure('0.04340015Pa')
@@ -1561,26 +1504,21 @@ class Solid:
 
     def lame_parameters(self):
         'Return tuple of first and second lame parameter.'
-
         return 2 * self.shear_modulus * self.poisson_ratio / (1 - 2 * self.poisson_ratio), self.shear_modulus
 
     def young(self):
         "Return Young's elasticity modulus."
-
         return 2 * self.shear_modulus * (1 + self.poisson_ratio)
 
 
 @dataclass
 class Fluid:
     '''Parameters for the fluid problem.'''
-
     density: Density = Density('10kg/L')
     viscosity: Viscosity = Viscosity('0.00559Pa*s')
     velocity: Velocity = Velocity('0.0000931667m/s')
-
     def reynolds(self, reference_length):
         'Return Reynolds number for given reference length'
-
         return self.density * self.velocity * reference_length / self.viscosity
 
 
@@ -1600,13 +1538,11 @@ class Dynamic:
 
     def ramp_up(self, t):
         'Return inflow ramp-up scale factor at given time.'
-
         return .5 - .5 * numpy.cos(numpy.pi * min(t / self.init, 1))
 
     @property
     def times(self):
         'Return all configured time steps for the simulation.'
-
         return numpy.arange(1, self.endtime / self.timestep + .5) * self.timestep
 
     def add_and_plot(self, name, t, v, ax):
@@ -1699,17 +1635,8 @@ class Dynamic:
         aδt2  = a0dt2 + δaδt2
         return uδt / self.timestep, aδt2 / self.timestep**2
 
-
 def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Optional[Fluid] = Fluid(), dynamic: Optional[Dynamic] = Dynamic()):
-    '''Turek Hron benchmark problem
-
-    This is a monolythic ALE (Arbitrary Lagrangian Eulerian) implementation of
-    the fluid-structure interaction benchmark defined in 2006 by [Turek and
-    Hron](https://doi.org/10.1007/3-540-34596-5_15). The implementation covers
-    all fluid dynamics tests CFD1, CFD2 and CFD3, all structural tests CSM1,
-    CSM2 and CSM3, and all interaction tests FSI1, FSI2 and FSI3, as well as
-    freely defined variants thereof.'''
-
+# Initialize the simulation, mesh, and reference geometry____________________________________________________________________________________________________________________________________________________________________
     assert solid or fluid, 'nothing to compute'
 
     if fluid:
@@ -1725,7 +1652,6 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
     bbezier      = topo['solid'].boundary['cylinder'].sample('bezier', 3)
     solid_bezier = topo['solid'].sample('bezier', 3)            
 
-
     res = 0.
     cons = {}
     args = {}
@@ -1734,22 +1660,18 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
     ns.δ = function.eye(2)
     ns.xref = geom
     ns.define_for('xref', gradient='∇ref', jacobians=('dVref', 'dSref'))
-
+#Define the solid fields, constitutive equations, momentum residual, and constraints__________________________________________________________________________________________________________________________________________
     if solid:
 
         ns.ρs = solid.density
         ns.λs, ns.μs = solid.lame_parameters()
         ns.g = -solid.gravity * ns.δ[1]
-
-        # Deformation, velocity and acceleration are defined on the entire
-        # domain, solving for conservation of momentum on the solid domain and
-        # a mesh continuation problem on the fluid domain. While the latter is
-        # used only when fluid is enabled, we include it regardless both for
-        # simplicity and for testing purposes.
+        
         ns.d = topo.field('d', btype='std', degree=2, shape=(2,)) * domain.cylinder_radius # deformation at the end of the timestep
 
         ns.cmforce = function.Argument('cm', (2,)) * solid.shear_modulus / domain.cylinder_radius
         ns.cmtest = function.Argument('cmtest', (2,))
+        
         if dynamic:
             ns.v, ns.a = dynamic.newmark_defo(ns.d)
         else:
@@ -1768,26 +1690,19 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
         ns.P_ij     = 'F_ik S_kj'
         ns.σcauchy_ij = 'P_ik F_jk / J'
         ns.Finv         = numpy.linalg.inv(ns.F)
-        
+
         ns.Pmesh_ij      = '2 (F_ij - Finv_ji)'
-
-
 
         # Momentum balance: ρs (a - g) = div P
         ns.dtest = function.replace_arguments(ns.d, 'd:dtest') / (solid.shear_modulus * domain.cylinder_radius**2)
         res += topo['solid'].integral('(∇ref_j(dtest_i) P_ij + dtest_i ρs (a_i - g_i) + dtest_i cmforce_i) dVref' @ ns, degree=4)
         res += topo['solid'].integral('cmtest_i x_i dVref' @ ns, degree=4) / domain.cylinder_radius**3
         
-        # In the momentum balance above, the only test and trial dofs involved are those that have support on the solid domain. 
-        # The remaining trial dofs will follow from minimizing a mesh energy functional, using the solid deformation as a boundary constraint 
-        # so that the continuation problem does not feed back into the physics. 
-        # To achieve this within a monolythic setting, we establish a boolean array 'dfluid' to select all dofs that are exclusively supported by the fluid domain, 
-        # and use it to restrict the minimization problem to the remaining dofs via the linearize operation.
-
         sqr = topo['solid'].integral('d_k d_k dVref' @ ns, degree=4) / domain.cylinder_radius**4
         dfluid = numpy.isnan(System(sqr, trial='d').solve_constraints(droptol=1e-9)['d']) # true if dof is not supported by solid domain
 
         dfluid_mask = dfluid  # True  = fluid-bulk d DOFs  → mesh extension
+        
         if fluid:
             res += Pressure('1Pa') * function.replace_arguments(topo['fluid'].integral('∇ref_j(dtest_i) Pmesh_ij dVref' @ ns, degree=4),
              {'dtest': function.arguments_for(res)['dtest'] * dfluid_mask})
@@ -1805,14 +1720,12 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
         ns.x = ns.xref
         ns.v = Velocity.wrap(function.zeros((2,)))
         ns.a = Acceleration.wrap(function.zeros((2,)))
-
+        
+#Define the fluid fields, governing equations, and boundary conditions_______________________________________________________________________________________________________________________________________
     if fluid:
-
         ns.ρf = fluid.density
         ns.μf = fluid.viscosity
-
         ns.define_for('x', gradient='∇', normal='n', jacobians=('dV', 'dS'))
-
         ns.urel = topo['fluid'].field('u', btype='std', degree=2, shape=(2,)) * fluid.velocity
         if dynamic:
             ns.arel = dynamic.newmark_velo(ns.urel)
@@ -1849,42 +1762,42 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
         # Incompressibility: div u = 0
         ns.ptest = function.replace_arguments(ns.p, 'p:ptest') / fluid.viscosity / fluid.velocity**2
         res += topo['fluid'].integral('ptest ∇_k(u_k) dV' @ ns, degree=4)
-
+        
+#Couple fluid and solid through the initial traction formulation_________________________________________________________________________________________________________________________________________________________________
         if solid:
             # The action of fluid stress on the solid is imposed weakly by lifting the test functions into the fluid domain, 
             # using the identity ∮ d·σ·n = ∫ ∇(d·σ) = ∫ (∇d:σ + d·∇σ) = ∫ (∇d:σ + ρf d·Du/Dt). 
             # We need the inverse of the dfluid mask to exclude dofs without support on the boundary.
-
+    
             dsolid = ~dfluid # true if dof is (partially) supported by solid domain
             res_d_fluid_lift = function.replace_arguments(topo['fluid'].integral('(dtest_i ρf DuDt_i + ∇_j(dtest_i) σ_ij) dV' @ ns, degree=4), {'dtest': function.arguments_for(res)['dtest'] * dsolid})
             res_d_fluid_direct = topo['fluid'].boundary['cylinder'].integral('dtest_i σ_ij n_j dS' @ ns, degree=4)
-
+    
             # Trace map: cylinder fluid-velocity test DOFs -> solid-displacement test DOFs
             cyl_gauss = topo['fluid'].boundary['cylinder'].sample('gauss', 4)
-            
+                
             test_unit = Pressure('1Pa') * Length('1m')
             dtest_dimless = ns.dtest * test_unit
             utest_dimless = ns.utest * test_unit
-            
+                
             Bd4 = function.eval(cyl_gauss.bind(dtest_dimless.derivative('dtest')))
             Bu4 = function.eval(cyl_gauss.bind(utest_dimless.derivative('utest')))
-            
+                
             Bd = Bd4.reshape(Bd4.shape[0] * Bd4.shape[1], -1)
             Bu = Bu4.reshape(Bu4.shape[0] * Bu4.shape[1], -1)
-            
+                
             i_d_gamma = numpy.flatnonzero(numpy.linalg.norm(Bd, axis=0) > 1e-12 * numpy.linalg.norm(Bd, axis=0).max())
             i_u_gamma = numpy.flatnonzero(numpy.linalg.norm(Bu, axis=0) > 1e-12 * numpy.linalg.norm(Bu, axis=0).max())
-            
+                
             Tdu_old = numpy.linalg.lstsq(Bu[:, i_u_gamma], Bd[:, i_d_gamma], rcond=None)[0]
-
+    
             res += res_d_fluid_lift
-
-        # Zero initial velocity
+        
+#Assemble the initial system, initialize fluid_state, and configure remeshing________________________________________________________________________________________________________________________________________________
         args['u'] = numpy.zeros(function.arguments_for(res)['u'].shape)
 
         u_bz = function.factor(fluid_bezier.bind(ns.u))
         p_bz = function.factor(fluid_bezier.bind(ns.p)) 
-
 
     x_bz = function.factor(fluid_bezier.bind(ns.x))
     x_bbz = function.factor(bbezier.bind(ns.x))
@@ -1897,24 +1810,17 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
     fluid_state = dict(
         topo_fluid = topo['fluid'],
         geom_bare  = geom / Length('1m'),
-
         x_field    = ns.x,
-
         v_field    = ns.v,
         a_field    = ns.a,
-
         urel_field = ns.urel,
         arel_field = ns.arel,
-
         p_field    = ns.p,
-
         d_field    = ns.d,
         d_name     = 'd',
         a0dt2_key  = 'a0δt2',
-
         dm_zipped_interface = None,
-        d_s_remesh_const_m  = None,
-    )
+        d_s_remesh_const_m  = None)
 
     if solid:
         solid_bz = topo['solid'].sample('bezier',3)
@@ -1928,11 +1834,8 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
     previous_t_s = 0.0
     remesh_count = 0
 
-    # ------------------------------------------------------------------
     # Remeshing control
-    # ------------------------------------------------------------------
     # Trigger remeshing when the minimum Jacobian of the fluid mesh drops below this threshold (relative to a perfect element = 1).
-
     enable_remeshing = True
     remesh_J_threshold = 0.6
     predictor_J_safety = 0.4
@@ -1940,9 +1843,7 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
 
     # Also allow a time-interval-based fallback trigger (set to None to disable).
     # Set to a small value for an early forced remesh to test the procedure before the mesh actually degrades. Once validated, set back to None.
-
     remesh_interval_s  = None  # first remesh forced at t=0.0001 s for testing
-
     next_remesh_time_s = remesh_interval_s if remesh_interval_s else float('inf')
 
     # Track whether we have remeshed (changes which Newmark keys exist)
@@ -1957,13 +1858,15 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
     
     with particle_csv.open('a') as f:
         f.write(f'{0.0:.12e},{0.0:.12e},{0},{L0:.12e},{B0:.12e},{D0:.12e},{omega0:.12e},{theta0:.12e},{theta0/numpy.pi:.12e}\n')
-
+        
+#Time integration and solve_________________________________________________________________________________________________________________________________________________________________________________________________
+    
     for istep, t in enumerate(log.iter.fraction('timestep', dynamic.times) if dynamic else [Time.wrap(float('inf'))], start=1):
+        
         if has_remeshed and 'dm' in args:
             dm_n = args['dm'].copy()
-    # ------------------------------------------------------------
-    # Time integration predictor/update
-    # ------------------------------------------------------------
+
+        # Time integration predictor/update
         if dynamic:
             if solid:
                 args = dynamic.newmark_defo_args(**args)
@@ -1972,17 +1875,13 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
                 args = dynamic.newmark_velo_args(**args)
                 cons['u'] = ucons * dynamic.ramp_up(t)
 
-            # After remesh, also advance d_m via the generic named Newmark
-            # helper (dm/dm0/vm0δt/am0δt2 — NOT the hardcoded d/d0/u0δt/a0δt2
-            # keys, which belong to the persistent solid field).
+            # After remesh, also advance d_m via the generic named Newmark helper (dm/dm0/vm0δt/am0δt2 — NOT the hardcoded d/d0/u0δt/a0δt2 keys, which belong to the persistent solid field).
             if has_remeshed and 'dm' in args:
                 args = dynamic.newmark_defo_args_named(
                     args, name='dm', d0_name='dm0',
                     u0dt_name='vm0δt', a0dt2_name='am0δt2')
 
-        # ------------------------------------------------------------
         # Predictor-state diagnostic before Newton
-        # ------------------------------------------------------------
         if has_remeshed:
 
             Jf_pred = function.eval(Jfluid_bz, arguments=args)
@@ -2000,13 +1899,10 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
 
                 log.info(
                     f'[PREDICTOR DAMPING] theta={theta:.6e}, '
-                    f'Jf_min={Jf_pred.min():.6e}'
-                )
+                    f'Jf_min={Jf_pred.min():.6e}')
 
 
-        # ------------------------------------------------------------
         # Solve nonlinear system
-        # ------------------------------------------------------------        
         try:
             args = system.solve(constrain=cons, arguments=args, tol=1e-9)  
             if not has_remeshed and istep <= 10:
@@ -2065,7 +1961,7 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
                 f'||lamf+reaction||={numpy.linalg.norm(summ):.6e}, '
                 f'rel={numpy.linalg.norm(diff)/max(numpy.linalg.norm(Rreaction),1e-30):.6e}'
             )
-
+#Solution diagnostics________________________________________________________________________________________________________________________________________________________________________________________________________
         if fluid:
             Jf = function.eval(Jfluid_bz, arguments=args)
 
@@ -2078,17 +1974,12 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
             if not numpy.all(numpy.isfinite(Js)) or Js.min() <= 0:
                 raise RuntimeError(f'Invalid solid state after Newton: Js_min={Js.min():.6e}')
 
-        # ------------------------------------------------------------
         # Time-step size used for cumulative diagnostics
-        # ------------------------------------------------------------
         current_t_s = float(t / 's') if dynamic else 0.0
         dt_s = current_t_s - previous_t_s if dynamic else 0.0
         previous_t_s = current_t_s
 
-        # ------------------------------------------------------------
         # Diagnostics after successful solve
-        # ------------------------------------------------------------
-
         if fluid:
             log.info(f'J fluid min/max: {Jf.min():.6e}, {Jf.max():.6e}')
 
@@ -2108,18 +1999,9 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
                 zipped.bind(ns.am), zipped.bind(ns.a)],
                 arguments=args)
 
-            dd = numpy.linalg.norm(
-                numpy.asarray(dm_g / 'm')
-                - (numpy.asarray(ds_g / 'm') - fluid_state['d_s_remesh_const_m']),
-                axis=-1)
-
-            dv = numpy.linalg.norm(
-                numpy.asarray((vm_g - vs_g) / 'm/s'),
-                axis=-1)
-
-            da = numpy.linalg.norm(
-                numpy.asarray((am_g - as_g) / 'm/s2'),
-                axis=-1)
+            dd = numpy.linalg.norm(numpy.asarray(dm_g / 'm') - (numpy.asarray(ds_g / 'm') - fluid_state['d_s_remesh_const_m']), axis=-1)
+            dv = numpy.linalg.norm(numpy.asarray((vm_g - vs_g) / 'm/s'), axis=-1)
+            da = numpy.linalg.norm(numpy.asarray((am_g - as_g) / 'm/s2'), axis=-1)
 
             R_m = float(domain.cylinder_radius / 'm')
             vs_ref = max(numpy.linalg.norm(numpy.asarray(vs_g / 'm/s'), axis=-1).max(), 1e-30)
@@ -2135,11 +2017,9 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
             
             log.info(f'[INTERFACE STEP] ||urel|| max={urel_err.max():.6e} m/s')
 
+#Remeshing procedure____________________________________________________________________________________________________________________________________________________________________________________________________
 
-        # ------------------------------------------------------------
         # Remeshing trigger — checked after every successful solve
-        # ------------------------------------------------------------
-
         if fluid and solid and enable_remeshing:
             need_remesh = False
 
@@ -2237,7 +2117,7 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
                     domain           = domain,
                     transfer_metrics = transfer_metrics,
                 )
-
+#Particle results__________________________________________________________________________________________________________________________________________________________________________________________________
         xb_current = function.eval(x_bbz, arguments=args) / 'm'
         L_particle_m, B_particle_m, deformation_index, aspect_ratio, orientation_rad = particle_shape_from_boundary(xb_current)
         
