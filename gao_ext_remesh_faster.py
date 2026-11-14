@@ -1513,8 +1513,11 @@ class Domain:
             export.triplot(ax, bezier.eval(geom), hull=bezier.hull)
             export.triplot(ax, bezier_cylinder.eval(geom), hull=bezier_cylinder.tri, linewidth=1, linecolor='b')
             L = self.channel_length/u
-            ax.set_xlim(-L, L)
-            ax.set_ylim(-L, L)
+            ax1.set_xlim(-1e-4, 1e-4)
+            ax1.set_ylim(-1e-4, 1e-4)
+            
+            ax2.set_xlim(-1e-4, 1e-4)
+            ax2.set_ylim(-1e-4, 1e-4)
             
         return topo, geom * u
 
