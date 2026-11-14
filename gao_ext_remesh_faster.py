@@ -1442,16 +1442,16 @@ def remesh_diagnostics(current_t_s, remesh_count, Jf_old, Jf_new, old_fluid_bezi
          closed = numpy.vstack([xb_solid_m, xb_solid_m[:1]])
          ax1.plot(closed[:, 0], closed[:, 1], 'r-', linewidth=1.5, label='solid boundary')
          ax1.set_aspect('equal')
-         ax1.set_xlim(-L_plot, L_plot)
-         ax1.set_ylim(-L_plot, L_plot)
+         ax1.set_xlim(-1e-4, 1e-4)
+         ax1.set_ylim(-1e-4, 1e-4)
          ax1.legend(fontsize=6)
 
          ax2 = fig.add_subplot(122, title=f'New fluid mesh after remesh\nJf_min={Jf_new.min():.3f}')
          export.triplot(ax2, new_x_m, hull=new_fluid_bezier.hull, linewidth=0.25)
          ax2.plot(closed[:, 0], closed[:, 1], 'r-', linewidth=1.5, label='solid boundary')
          ax2.set_aspect('equal')
-         ax2.set_xlim(-L_plot, L_plot)
-         ax2.set_ylim(-L_plot, L_plot)
+         ax2.set_xlim(-1e-4, 1e-4)
+         ax2.set_ylim(-1e-4, 1e-4)
          ax2.legend(fontsize=6)
 
          fig.suptitle(f'Remesh #{remesh_count}  t={current_t_s:.4e} s', fontsize=9)
@@ -1513,11 +1513,8 @@ class Domain:
             export.triplot(ax, bezier.eval(geom), hull=bezier.hull)
             export.triplot(ax, bezier_cylinder.eval(geom), hull=bezier_cylinder.tri, linewidth=1, linecolor='b')
             L = self.channel_length/u
-            ax1.set_xlim(-1e-4, 1e-4)
-            ax1.set_ylim(-1e-4, 1e-4)
-            
-            ax2.set_xlim(-1e-4, 1e-4)
-            ax2.set_ylim(-1e-4, 1e-4)
+            ax.set_xlim(-L, L)
+            ax.set_ylim(-L, L)
             
         return topo, geom * u
 
