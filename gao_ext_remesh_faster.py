@@ -823,8 +823,32 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
         except Exception as ex:
             log.info(
                 f'[REMESH] Topology.locate failed with '
-                f'tol={transfer_tol_m:.3e} m: {ex}'
-            )
+                f'tol={transfer_tol_m:.3e} m: {ex}')
+            if transfer_tol_m == 1e-3*R_m:
+                bad_points = []
+        
+                for iq, xq in enumerate(new_dof_x_m):
+                    try:
+                        old_topo_fluid.locate(
+                            x_field / Length('1m'),
+                            xq[None, :],
+                            tol=transfer_tol_m,
+                            arguments=args,
+                            skip_missing=False)
+                    except Exception:
+                        bad_points.append((iq, xq))
+        
+                log.info(f'[LOCATE DIAGNOSTIC] failed points = {len(bad_points)}')
+        
+                for iq, xq in bad_points:
+                    dist_interface = numpy.min(
+                        numpy.linalg.norm(solid_cyl_pts_now_m - xq, axis=1))
+        
+                    log.info(
+                        f'[LOCATE DIAGNOSTIC] index={iq}, '
+                        f'x=({xq[0]:.12e}, {xq[1]:.12e}) m, '
+                        f'dist_interface={dist_interface:.6e} m')
+            
     
     #Alternative interpolation if geometric location fails
     if not transfer_via_locate: 
