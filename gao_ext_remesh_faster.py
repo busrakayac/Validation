@@ -220,6 +220,14 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     #Reconstruct the physical fluid velocity
     old_uf = old_v + old_urel   
 
+    #This gives us a valid gradient value to use if one point cannot be located.
+    ns_old_grad_fb = Namespace()
+    ns_old_grad_fb.x = x_field
+    ns_old_grad_fb.define_for('x', gradient='∇')
+    ns_old_grad_fb.uf = v_field + urel_field
+    
+    old_graduf_s = numpy.asarray(function.eval(old_sample.bind('∇_j(uf_i)' @ ns_old_grad_fb), arguments=args) / '1/s', dtype=float)
+
     #Convert quantities into numerical arrays
     old_x_m       = numpy.asarray(old_x_phys / 'm', dtype=float)
     old_uf_ms     = numpy.asarray(old_uf / 'm/s', dtype=float)
@@ -850,32 +858,88 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
                         f'dist_interface={dist_interface:.6e} m')
             
     
-    #Alternative interpolation if geometric location fails
-    if not transfer_via_locate: 
-
-        def _I(vals):
-            return LinearNDInterpolator(old_x_m, vals, fill_value=0.0)(new_dof_x_m) #constructs values at the new quadrature points using previously sampled coordinates and values from the old mesh.
-
-        new_uf_x = _I(old_uf_ms[:, 0])
-        new_uf_y = _I(old_uf_ms[:, 1])
-        new_vm_x = _I(old_vm_ms[:, 0])
-        new_vm_y = _I(old_vm_ms[:, 1])
-        new_am_x = _I(old_am_ms2[:, 0])
-        new_am_y = _I(old_am_ms2[:, 1])
-        new_urel_x = _I(old_urel_ms[:, 0])
-        new_urel_y = _I(old_urel_ms[:, 1])
-        new_arel_x = _I(old_arel_ms2[:, 0])
-        new_arel_y = _I(old_arel_ms2[:, 1])
-        new_p_Pa = _I(old_p_Pa)
-        new_a0dt2_x = _I(old_a0dt2_m[:, 0])
-        new_a0dt2_y = _I(old_a0dt2_m[:, 1])
-        new_u0_x = _I(old_u0_ms[:, 0])
-        new_u0_y = _I(old_u0_ms[:, 1])
-        new_a0dt_urel_x = _I(old_a0dt_urel_ms[:, 0])
-        new_a0dt_urel_y = _I(old_a0dt_urel_ms[:, 1])
-
-    if new_graduf is None:
-        raise RuntimeError('Gradient-preserving restart requires locate-based transfer.')
+    # Hybrid fallback: exact locate everywhere possible, nearest old-fluid
+    # Gauss value only at the few points that cannot be located.
+    if not transfer_via_locate:
+    
+        bad_idx = numpy.array([iq for iq, _ in bad_points], dtype=int)
+    
+        good_mask = numpy.ones(len(new_dof_x_m), dtype=bool)
+        good_mask[bad_idx] = False
+        good_idx = numpy.flatnonzero(good_mask)
+    
+        old_good = old_topo_fluid.locate(
+            x_field / Length('1m'),
+            new_dof_x_m[good_idx],
+            tol=transfer_tol_m,
+            arguments=args,
+            skip_missing=False)
+    
+        vals = function.eval([
+            old_good.bind(v_field + urel_field),
+            old_good.bind(v_field),
+            old_good.bind(a_field),
+            old_good.bind(urel_field),
+            old_good.bind(arel_field),
+            old_good.bind(p_field),
+            old_good.bind(a0dt2_expr),
+            old_good.bind(u0_expr),
+            old_good.bind(a0dt_urel_expr),
+            old_good.bind('∇_j(uf_i)' @ ns_old_grad_fb)], arguments=args)
+    
+        N = len(new_dof_x_m)
+    
+        new_uf      = numpy.empty((N, 2))
+        new_vm      = numpy.empty((N, 2))
+        new_am      = numpy.empty((N, 2))
+        new_urel    = numpy.empty((N, 2))
+        new_arel    = numpy.empty((N, 2))
+        new_p_Pa    = numpy.empty(N)
+        new_a0dt2   = numpy.empty((N, 2))
+        new_u0      = numpy.empty((N, 2))
+        new_a0dturel = numpy.empty((N, 2))
+        new_graduf  = numpy.empty((N, 2, 2))
+    
+        new_uf[good_idx]       = numpy.asarray(vals[0] / 'm/s')
+        new_vm[good_idx]       = numpy.asarray(vals[1] / 'm/s')
+        new_am[good_idx]       = numpy.asarray(vals[2] / 'm/s2')
+        new_urel[good_idx]     = numpy.asarray(vals[3] / 'm/s')
+        new_arel[good_idx]     = numpy.asarray(vals[4] / 'm/s2')
+        new_p_Pa[good_idx]     = numpy.asarray(vals[5] / 'Pa')
+        new_a0dt2[good_idx]    = numpy.asarray(vals[6] / 'm')
+        new_u0[good_idx]       = numpy.asarray(vals[7] / 'm/s')
+        new_a0dturel[good_idx] = numpy.asarray(vals[8] / 'm/s')
+        new_graduf[good_idx]   = numpy.asarray(vals[9] / '1/s')
+    
+        from scipy.spatial import cKDTree
+        tree = cKDTree(old_x_m)
+        _, nn = tree.query(new_dof_x_m[bad_idx])
+    
+        new_uf[bad_idx]       = old_uf_ms[nn]
+        new_vm[bad_idx]       = old_vm_ms[nn]
+        new_am[bad_idx]       = old_am_ms2[nn]
+        new_urel[bad_idx]     = old_urel_ms[nn]
+        new_arel[bad_idx]     = old_arel_ms2[nn]
+        new_p_Pa[bad_idx]     = old_p_Pa[nn]
+        new_a0dt2[bad_idx]    = old_a0dt2_m[nn]
+        new_u0[bad_idx]       = old_u0_ms[nn]
+        new_a0dturel[bad_idx] = old_a0dt_urel_ms[nn]
+        new_graduf[bad_idx]   = old_graduf_s[nn]
+    
+        new_uf_x, new_uf_y = new_uf.T
+        new_vm_x, new_vm_y = new_vm.T
+        new_am_x, new_am_y = new_am.T
+        new_urel_x, new_urel_y = new_urel.T
+        new_arel_x, new_arel_y = new_arel.T
+        new_a0dt2_x, new_a0dt2_y = new_a0dt2.T
+        new_u0_x, new_u0_y = new_u0.T
+        new_a0dt_urel_x, new_a0dt_urel_y = new_a0dturel.T
+    
+        transfer_via_locate = True
+    
+        log.info(
+            f'[REMESH] hybrid transfer used: '
+            f'{len(good_idx)} exact points, {len(bad_idx)} nearest-neighbour points')
 
     #Retrieve the Newmark integration parameters
     beta, gamma, dt = dynamic.beta, dynamic.gamma, float(dynamic.timestep / 's')
