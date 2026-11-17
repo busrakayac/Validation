@@ -1591,10 +1591,6 @@ class Solid:
     shear_modulus: Pressure = Pressure('0.04340015Pa')
     gravity: Acceleration = Acceleration('0m/s2')
 
-    def young(self):
-        "Return Young's elasticity modulus."
-        return 2 * self.shear_modulus * (1 + self.poisson_ratio)
-
 
 @dataclass
 class Fluid:
