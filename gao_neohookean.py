@@ -587,6 +587,8 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     res_d_inertia  = topo['solid'].integral('dtest_i ρs (a_i - g_i) dVref' @ new_ns, degree=4) #solid inertia and body forces
     res_d_cmforce  = topo['solid'].integral('dtest_i cmforce_i dVref' @ new_ns, degree=4) #reaction associated with the center position constrained
     new_res = res_d_internal + res_d_inertia + res_d_cmforce
+    res_solid_inc = topo['solid'].integral('pstest ln(J) dVref' @ new_ns, degree=4) / domain.cylinder_radius**2
+    new_res += res_solid_inc
     new_res += topo['solid'].integral('cmtest_i x_i dVref' @ new_ns, degree=4) / domain.cylinder_radius**3 #to keep the particle fixed
 
     #Artificial mesh-extension equation
@@ -767,7 +769,7 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
 #_____________________________________________________________________________________________________________________________________________
 
     # 8. Build new Newton system, only the construction not executing the iterations
-    new_system = System(new_res, trial=['d', 'cm', 'dm', 'u', 'p', 'lam', 'lamf'], test=['dtest', 'cmtest', 'dmtest', 'utest', 'ptest', 'lamtest', 'lamftest'])
+    new_system = System(new_res, trial=['d', 'ps', 'cm', 'dm', 'u', 'p', 'lam', 'lamf'], test=['dtest', 'pstest', 'cmtest', 'dmtest', 'utest', 'ptest', 'lamtest', 'lamftest'])
 #______________________________________________________________________________________________________________________________________________________________________________
 
     # 9. Transfer the old fluid solution onto the new mesh
@@ -1586,13 +1588,8 @@ class Domain:
 class Solid:
     '''Parameters for the solid problem.'''
     density: Density = Density('10kg/L')
-    poisson_ratio: float = .45
     shear_modulus: Pressure = Pressure('0.04340015Pa')
     gravity: Acceleration = Acceleration('0m/s2')
-
-    def lame_parameters(self):
-        'Return tuple of first and second lame parameter.'
-        return 2 * self.shear_modulus * self.poisson_ratio / (1 - 2 * self.poisson_ratio), self.shear_modulus
 
     def young(self):
         "Return Young's elasticity modulus."
@@ -1752,10 +1749,12 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
     if solid:
 
         ns.ρs = solid.density
-        ns.λs, ns.μs = solid.lame_parameters()
+        ns.μs = solid.shear_modulus
         ns.g = -solid.gravity * ns.δ[1]
         
         ns.d = topo.field('d', btype='std', degree=2, shape=(2,)) * domain.cylinder_radius # deformation at the end of the timestep
+        ns.ps = topo['solid'].field('ps', btype='std', degree=1) * solid.shear_modulus
+        ns.pstest = function.replace_arguments(ns.ps, 'ps:pstest') / solid.shear_modulus
 
         ns.cmforce = function.Argument('cm', (2,)) * solid.shear_modulus / domain.cylinder_radius
         ns.cmtest = function.Argument('cmtest', (2,))
@@ -1774,7 +1773,7 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
         ns.C_ij = 'F_ki F_kj' # right Cauchy-Green deformation tensor
         ns.Cinv = numpy.linalg.inv(ns.C)
         ns.E_ij = '.5 (C_ij - δ_ij)' # Green-Lagrangian strain tensor
-        ns.S_ij = 'μs (δ_ij - Cinv_ij) + λs ln(J) Cinv_ij'
+        ns.S_ij = 'μs (δ_ij - Cinv_ij) - ps Cinv_ij'
         ns.P_ij     = 'F_ik S_kj'
         ns.σcauchy_ij = 'P_ik F_jk / J'
         ns.Finv         = numpy.linalg.inv(ns.F)
@@ -1784,6 +1783,7 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
         # Momentum balance: ρs (a - g) = div P
         ns.dtest = function.replace_arguments(ns.d, 'd:dtest') / (solid.shear_modulus * domain.cylinder_radius**2)
         res += topo['solid'].integral('(∇ref_j(dtest_i) P_ij + dtest_i ρs (a_i - g_i) + dtest_i cmforce_i) dVref' @ ns, degree=4)
+        res += topo['solid'].integral('pstest ln(J) dVref' @ ns, degree=4) / domain.cylinder_radius**2
         res += topo['solid'].integral('cmtest_i x_i dVref' @ ns, degree=4) / domain.cylinder_radius**3
         
         sqr = topo['solid'].integral('d_k d_k dVref' @ ns, degree=4) / domain.cylinder_radius**4
@@ -1801,6 +1801,7 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
 
         # Zero initial deformation
         args['d'] = numpy.zeros(function.arguments_for(res)['d'].shape)
+        args['ps'] = numpy.zeros(function.arguments_for(res)['ps'].shape)
         args['cm'] = numpy.zeros(2)
 
     else: # fully rigid solid
@@ -1917,7 +1918,7 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
         d_cyl_bz = function.factor(bbezier.bind(ns.d))
         
          
-    trial = (['u', 'p'] if fluid else []) + (['d', 'cm'] if solid else [])
+    trial = (['u', 'p'] if fluid else []) + (['d', 'ps', 'cm'] if solid else [])
     system = System(res, trial=list(trial), test=[t+'test' for t in trial])
     previous_t_s = 0.0
     remesh_count = 0
