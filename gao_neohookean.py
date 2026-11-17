@@ -1475,7 +1475,7 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
 #________________________________________________________________________________________________________________________________________________________________________________________
 
 # 16. Report remeshing diagnostics
-def remesh_diagnostics(current_t_s, remesh_count, Jf_old, Jf_new, old_fluid_bezier, new_fluid_bezier, xb_solid_m, old_x_m, new_x_m, old_u_vals, new_u_vals, domain, transfer_metrics):
+def remesh_diagnostics(current_t_s, remesh_count, Jf_old, Jf_new, old_fluid_bezier, new_fluid_bezier, xb_solid_m, solid_boundary_tri, old_x_m, new_x_m, old_u_vals, new_u_vals, domain, transfer_metrics):
    
     #Produce all diagnostic plots and prints at a remesh event. Called immediately after ``remesh_fluid`` returns.  
     #Generates:
@@ -1505,8 +1505,7 @@ def remesh_diagnostics(current_t_s, remesh_count, Jf_old, Jf_new, old_fluid_bezi
 
          ax1 = fig.add_subplot(121, title=f'ALE mesh before remesh\nJf_min={Jf_old.min():.3f}')
          export.triplot(ax1, old_x_m, hull=old_fluid_bezier.hull, linewidth=0.25)
-         closed = numpy.vstack([xb_solid_m, xb_solid_m[:1]])
-         ax1.plot(closed[:, 0], closed[:, 1], 'r-', linewidth=1.5, label='solid boundary')
+         export.triplot(ax1, xb_solid_m, hull=solid_boundary_tri, linewidth=1.5, linecolor='r')
          ax1.set_aspect('equal')
          ax1.set_xlim(-1e-4, 1e-4)
          ax1.set_ylim(-1e-4, 1e-4)
@@ -1514,7 +1513,7 @@ def remesh_diagnostics(current_t_s, remesh_count, Jf_old, Jf_new, old_fluid_bezi
 
          ax2 = fig.add_subplot(122, title=f'New fluid mesh after remesh\nJf_min={Jf_new.min():.3f}')
          export.triplot(ax2, new_x_m, hull=new_fluid_bezier.hull, linewidth=0.25)
-         ax2.plot(closed[:, 0], closed[:, 1], 'r-', linewidth=1.5, label='solid boundary')
+         export.triplot(ax2, xb_solid_m, hull=solid_boundary_tri, linewidth=1.5, linecolor='r')
          ax2.set_aspect('equal')
          ax2.set_xlim(-1e-4, 1e-4)
          ax2.set_ylim(-1e-4, 1e-4)
@@ -2188,18 +2187,19 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
                 
 
                 remesh_diagnostics(
-                    current_t_s   = current_t_s,
-                    remesh_count  = remesh_count,
-                    Jf_old        = Jf_old_for_diag,
-                    Jf_new        = Jf,
+                    current_t_s = current_t_s,
+                    remesh_count = remesh_count,
+                    Jf_old = Jf_old_for_diag,
+                    Jf_new = Jf,
                     old_fluid_bezier = old_fb_diag,
                     new_fluid_bezier = fluid_bezier,
-                    xb_solid_m       = xb_current_for_remesh,
-                    old_x_m          = old_x_diag,
-                    new_x_m          = new_x_diag,
-                    old_u_vals       = old_u_diag,
-                    new_u_vals       = new_u_diag,
-                    domain           = domain,
+                    xb_solid_m = xb_current_for_remesh,
+                    solid_boundary_tri = bbezier.tri,
+                    old_x_m = old_x_diag,
+                    new_x_m = new_x_diag,
+                    old_u_vals = old_u_diag,
+                    new_u_vals = new_u_diag,
+                    domain = domain,
                     transfer_metrics = transfer_metrics,
                 )
 #Particle results__________________________________________________________________________________________________________________________________________________________________________________________________
