@@ -1086,7 +1086,7 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
             'uproj': urel_new_dofs.copy(),
             'Vproj': V_mesh.copy(),
             'qproj': numpy.zeros(
-                function.arguments_for(res_proj)['qproj'].shape)}, tol=1e-12)
+                function.arguments_for(res_proj)['qproj'].shape)}, tol=1e-11)
     
     urel_proj_dofs = proj_solution['uproj'] #THIS IS THE FINAL CORRECTED RELATIVE VELOCITY 
 #_____________________________________________________________________________________________________________________________________________
@@ -1559,8 +1559,8 @@ def remesh_diagnostics(current_t_s, remesh_count, Jf_old, Jf_new, old_fluid_bezi
 class Domain:
     channel_length: Length = Length('0.0006m')
     cylinder_radius: Length = Length('0.00003m')
-    elemsize: Length = Length('0.00003m')
-    coarsening: float = 2.67
+    elemsize: Length = Length('0.000015m')
+    coarsening: float = 8.
 
     def generate_mesh(self):
         'Call gmsh to generate mesh and return topo, geom tuple.'''
