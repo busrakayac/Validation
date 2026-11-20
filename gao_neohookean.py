@@ -1,6 +1,6 @@
 from nutils.mesh import gmsh
 from nutils import cli, export, function
-from nutils.solver import System
+from nutils.solver import System, LinesearchNewton
 from nutils.SI import Length, Density, Viscosity, Velocity, Time, Pressure, Acceleration
 from nutils.expression_v2 import Namespace
 from collections import defaultdict, deque
@@ -1988,7 +1988,7 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
 
         # Solve nonlinear system
         try:
-            args = system.solve(constrain=cons, arguments=args, tol=1e-9)  
+            args = system.solve(constrain=cons, arguments=args, tol=1e-9, maxiter=50, method=LinesearchNewton())
             if not has_remeshed and istep <= 10:
                 Ru = numpy.asarray(function.eval(res_fluid_mom_old.derivative('utest'), arguments=args), dtype=float).reshape(-1)
                 Rlift = numpy.asarray(function.eval(res_d_fluid_lift.derivative('dtest'), arguments=args), dtype=float).reshape(-1)
