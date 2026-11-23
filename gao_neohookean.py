@@ -12,6 +12,8 @@ import numpy
 from scipy.interpolate import LinearNDInterpolator
 import subprocess
 import meshio
+import nutils.cache
+nutils.cache.disable()
 
 #Calculates the particle's deformation (omega) and orientation(theta) from its current boundary coordinates.
 #This method uses principal component analysis (PCA) to estimate the particle axes.
@@ -2208,13 +2210,13 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
         
         time_nd = epsdot_s * current_t_s
         theta_over_pi = orientation_rad 
-        
-        with particle_csv.open('a') as f:
-            f.write(
-                f'{current_t_s:.12e},{time_nd:.12e},{istep},'
-                f'{L_particle_m:.12e},{B_particle_m:.12e},{deformation_index:.12e},'
-                f'{aspect_ratio:.12e},{orientation_rad:.12e},{theta_over_pi:.12e}\n'
-            )
+        if istep % 10 == 0:
+            with particle_csv.open('a') as f:
+                f.write(
+                    f'{current_t_s:.12e},{time_nd:.12e},{istep},'
+                    f'{L_particle_m:.12e},{B_particle_m:.12e},{deformation_index:.12e},'
+                    f'{aspect_ratio:.12e},{orientation_rad:.12e},{theta_over_pi:.12e}\n'
+                )
         
         # ------------------------------------------------------------
         # Save deformed mesh every 100 timesteps
