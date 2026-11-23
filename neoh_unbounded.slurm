@@ -3,8 +3,8 @@
 #SBATCH --output=output_%j.txt
 #SBATCH --error=error_%j.txt
 #SBATCH --nodes=1
-#SBATCH --ntasks=16                  # CHANGED: was 1 — MPI ranks
-#SBATCH --cpus-per-task=1            # CHANGED: was 16 — 1 thread per MPI rank
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
 #SBATCH --time=120:00:00
 #SBATCH --mem=64G
 #SBATCH --partition=tue.default.q
@@ -22,10 +22,10 @@ python -c "import nutils; print(nutils.__version__)"
 
 export NUTILS_MATRIX=mkl
 
-export MKL_NUM_THREADS=1             # CHANGED: was 16 — 1 per rank, avoid oversubscription
-export OMP_NUM_THREADS=1             # CHANGED: same reason
-export OPENBLAS_NUM_THREADS=1
-export NUMEXPR_NUM_THREADS=1
+export MKL_NUM_THREADS=16
+export OMP_NUM_THREADS=16
+export OPENBLAS_NUM_THREADS=16
+export NUMEXPR_NUM_THREADS=16
 
 export NUTILS_NPROCS=16              # CHANGED: was 1 — tell Nutils to use 16 processes
 
@@ -33,4 +33,4 @@ echo "Running from: $(pwd)"
 git rev-parse --short HEAD
 readlink -f gao_ext_remesh.py
 
-srun --mpi=pmi2 python -u gao_neohookean.py main   # CHANGED: added --mpi=pmi2
+srun python -u gao_neohookean.py main
