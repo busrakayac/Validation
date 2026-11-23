@@ -12,8 +12,6 @@ import numpy
 from scipy.interpolate import LinearNDInterpolator
 import subprocess
 import meshio
-import nutils.cache
-nutils.cache.disable()
 
 #Calculates the particle's deformation (omega) and orientation(theta) from its current boundary coordinates.
 #This method uses principal component analysis (PCA) to estimate the particle axes.
