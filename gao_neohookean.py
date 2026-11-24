@@ -1608,7 +1608,7 @@ class Dynamic:
     '''Parameters relating to time dependence.'''
 
     timestep: Time = Time('0.05ms') # simulation time step size
-    endtime: Time = Time('10s') # total duration of the simulation
+    endtime: Time = Time('4s') # total duration of the simulation
     init: Time = Time('.1s') # duration of the ramp-up phase
     window: Time = Time('1s') # sliding window length for time series plots
     gamma: float = .5
