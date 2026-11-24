@@ -12,6 +12,7 @@ import numpy
 from scipy.interpolate import LinearNDInterpolator
 import subprocess
 import meshio
+import os
 
 #Calculates the particle's deformation (omega) and orientation(theta) from its current boundary coordinates.
 #This method uses principal component analysis (PCA) to estimate the particle axes.
@@ -1921,7 +1922,9 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
     # Remeshing control
     # Trigger remeshing when the minimum Jacobian of the fluid mesh drops below this threshold (relative to a perfect element = 1).
     enable_remeshing = True
-    remesh_J_threshold = 0.6
+    remesh_J_threshold = float(os.environ.get('REMESH_J_THRESHOLD', '0.6'))
+    log.info(f'Remeshing threshold: Jf_min < {remesh_J_threshold}')
+    #remesh_J_threshold = 0.6
     predictor_J_safety = 0.4
     remesh_Jmax_threshold = 2.0
 
