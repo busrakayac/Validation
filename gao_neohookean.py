@@ -1559,7 +1559,7 @@ def remesh_diagnostics(current_t_s, remesh_count, Jf_old, Jf_new, old_fluid_bezi
 class Domain:
     channel_length: Length = Length('0.0006m')
     cylinder_radius: Length = Length('0.00003m')
-    elemsize: Length = Length('0.000015m')
+    elemsize: Length = Length('0.000012m')
     coarsening: float = 8.
 
     def generate_mesh(self):
