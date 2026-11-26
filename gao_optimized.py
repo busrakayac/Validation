@@ -698,8 +698,7 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     new_cons = {}
 
     new_cons['d'] = fluid_state['solid_dcons'].copy()
-    new_cons = System(sqr_ds, trial='d').solve_constraints(droptol=1e-9, constrain=new_cons)
-
+    
     sqr_dm_outer = new_topo['fluid'].boundary['outer'].integral('dm_k dm_k dSref' @ ns_m, degree=4) / domain.cylinder_radius**3 #d_m = 0 on the channel walls
     dm_outer_only = System(sqr_dm_outer, trial='dm').solve_constraints(droptol=1e-9)
     dm_outer_cons = dm_outer_only['dm'].copy()
@@ -998,8 +997,10 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
 
     #Project the physical fluid velocity transferred from the old mesh:
     targets = numpy.stack([numpy.column_stack((new_uf_x, new_uf_y)), numpy.column_stack((new_a0dt_urel_x, new_a0dt_urel_y)), dt * numpy.column_stack((new_arel_x, new_arel_y))], axis=1) / u_scale
-    projected = _project_vectors(targets)
-    uf_proj_dofs, a0dt_new, A_rel = projected[:, 0, :], projected[:, 1, :], projected[:, 2, :]
+    projected = _project_vectors(targets).reshape(-1, 3, 2)
+    uf_proj_dofs, a0dt_new, A_rel = [projected[:, i, :].ravel().copy() for i in range(3)]
+    assert uf_proj_dofs.shape == function.arguments_for(new_ns.urel)['u'].shape
+    assert a0dt_new.shape == A_rel.shape == uf_proj_dofs.shape
     #At this stage, the velocity is only an L2 approximation of the old physical fluid velocity. It has not yet undergone the divergence-constrained and gradient-preserving correction introduced later.
 
     #Reconstruct the fluid mesh velocity
@@ -1449,7 +1450,7 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
         reaction_i_d_gamma     = i_d_gamma.copy(),
         reaction_res_fluid_mom = res_fluid_mom,
         reaction_res_solid_lamf = res_solid_lamf)
-        new_fluid_state['solid_dcons'] = fluid_state['solid_dcons']
+    new_fluid_state['solid_dcons'] = fluid_state['solid_dcons']
     return (
         new_ns, new_res, new_cons, new_ucons, new_system,
         new_fluid_bezier, new_x_bz, new_u_bz, new_p_bz,
@@ -2201,10 +2202,11 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
         
         
         time_nd = epsdot_s * current_t_s
-        theta_over_pi = orientation_rad 
+        
         if istep % 10 == 0:
             xb_current = function.eval(x_bbz, arguments=args) / 'm'
             L_particle_m, B_particle_m, deformation_index, aspect_ratio, orientation_rad = particle_shape_from_boundary(xb_current)
+            theta_over_pi = orientation_rad 
             with particle_csv.open('a') as f:
                 f.write(
                     f'{current_t_s:.12e},{time_nd:.12e},{istep},'
