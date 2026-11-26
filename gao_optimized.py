@@ -997,8 +997,8 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
 
     #Project the physical fluid velocity transferred from the old mesh:
     targets = numpy.stack([numpy.column_stack((new_uf_x, new_uf_y)), numpy.column_stack((new_a0dt_urel_x, new_a0dt_urel_y)), dt * numpy.column_stack((new_arel_x, new_arel_y))], axis=1) / u_scale
-    projected = _project_vectors(targets).reshape(-1, 3, 2)
-    uf_proj_dofs, a0dt_new, A_rel = [projected[:, i, :].ravel().copy() for i in range(3)]
+    projected = _project_vectors(targets)
+    uf_proj_dofs, a0dt_new, A_rel = [projected[:, i, :].copy() for i in range(3)]
     assert uf_proj_dofs.shape == function.arguments_for(new_ns.urel)['u'].shape
     assert a0dt_new.shape == A_rel.shape == uf_proj_dofs.shape
     #At this stage, the velocity is only an L2 approximation of the old physical fluid velocity. It has not yet undergone the divergence-constrained and gradient-preserving correction introduced later.
