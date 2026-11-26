@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=gao_remesh
+#SBATCH --job-name=optimized
 #SBATCH --output=output_%j.txt
 #SBATCH --error=error_%j.txt
 #SBATCH --nodes=1
@@ -33,4 +33,4 @@ echo "Running from: $(pwd)"
 git rev-parse --short HEAD
 readlink -f gao_ext_remesh.py
 
-srun python -u gao_neohookean.py main
+srun python -u gao_optimized.py main
