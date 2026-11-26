@@ -1362,6 +1362,9 @@ def remesh_fluid(current_t_s, xb_current_m, domain, ns, solid, fluid, dynamic, a
     rel_rms = rms_err / max(rms_old, 1e-30)
 
     log.info(f'[TRANSFER CHECK] v_mesh: max={abs_err.max():.6e} m/s, RMS={rms_err:.6e} m/s, relRMS={rel_rms:.6e}')
+    old_am_check = numpy.column_stack((new_am_x, new_am_y))
+    new_am_check = numpy.asarray(function.eval(new_dof_sample.bind(new_ns.am), arguments=new_args) / 'm/s2')
+    log.info(f'[MESH ACCELERATION] old max={numpy.linalg.norm(old_am_check, axis=1).max():.6e}, new max={numpy.linalg.norm(new_am_check, axis=1).max():.6e} m/s2')
     #[INTERFACE VELOCITY] checks whether the fluid, mesh, and solid move consistently at the particle boundary. These conditions are physically important.
     #[TRANSFER CHECK] v_mesh measures how much the mesh motion changed in the fluid interior. This is useful for assessing the remeshing reconstruction, but a nonzero difference is not necessarily an error.
 #_____________________________________________________________________________________________________________________________________________
@@ -1915,7 +1918,7 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
     # Remeshing control
     # Trigger remeshing when the minimum Jacobian of the fluid mesh drops below this threshold (relative to a perfect element = 1).
     enable_remeshing = True
-    remesh_J_threshold = float(os.environ.get('REMESH_J_THRESHOLD', '0.6'))
+    remesh_J_threshold = float(os.environ.get('REMESH_J_THRESHOLD', '0.7'))
     log.info(f'Remeshing threshold: Jf_min < {remesh_J_threshold}')
     #remesh_J_threshold = 0.6
     predictor_J_safety = 0.4
@@ -1965,6 +1968,12 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
         if has_remeshed:
 
             Jf_pred = function.eval(Jfluid_bz, arguments=args)
+            if istep == fluid_state['remesh_istep'] + 1 or Jf_pred.min() < predictor_J_safety:
+                log.info(f'[RAW PREDICTOR] Jmin={Jf_pred.min():.6e}, Vterm/R={numpy.linalg.norm(args["vm0δt"], axis=1).max():.6e}, Aterm/R={0.5*numpy.linalg.norm(args["am0δt2"], axis=1).max():.6e}')
+
+                Jv = function.eval(Jfluid_bz, arguments=dict(args, dm=dm_n + args['vm0δt']))
+                Ja = function.eval(Jfluid_bz, arguments=dict(args, dm=dm_n + 0.5*args['am0δt2']))
+                log.info(f'[PREDICTOR COMPONENTS] Jmin_velocity={Jv.min():.6e}, Jmin_acceleration={Ja.min():.6e}')
             if Jf_pred.min() < predictor_J_safety:
 
                 dm_pred = args['dm'].copy()
@@ -2006,6 +2015,9 @@ def main(domain: Domain = Domain(), solid: Optional[Solid] = Solid(), fluid: Opt
 
             if fluid:
                 Jf = function.eval(Jfluid_bz, arguments=args)
+                if has_remeshed and Jf.min() < remesh_J_threshold:
+                    Xref_bz = function.eval(fluid_bezier.bind(fluid_state['geom_bare']))
+                    log.info(f'[WORST JACOBIAN] Jmin={Jf.min():.6e}, Xref={Xref_bz[numpy.argmin(Jf)]} m')
                 log.info(f'J fluid min/max: {Jf.min():.6e}, {Jf.max():.6e}')
 
             if solid:
