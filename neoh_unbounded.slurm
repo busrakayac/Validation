@@ -31,6 +31,6 @@ export NUTILS_NPROCS=16              # CHANGED: was 1 — tell Nutils to use 16 
 
 echo "Running from: $(pwd)"
 git rev-parse --short HEAD
-readlink -f gao_ext_remesh.py
+readlink -f gao_optimized.py
 
 srun python -u gao_optimized.py main
